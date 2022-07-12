@@ -259,8 +259,6 @@ def test_03_volpathsimple_basic():
 
 
 def test_04_volpathsimple_correctness():
-    output_dir = join(OUTPUT_DIR, 'test_integrators', 'test_volpathsimple_correctness')
-    os.makedirs(output_dir, exist_ok=True)
     mi.set_variant('cuda_ad_rgb_double')
     from integrators.volpathsimple import VolpathSimpleIntegrator
 
@@ -275,18 +273,28 @@ def test_04_volpathsimple_correctness():
         # TODO: test both
         'use_drt': False,
         # TODO: test both
-        'use_nee': False,
+        'use_nee': True,
     })
+    seed = 12345
+
+    suffix = ''
+    if integrator.use_nee:
+        suffix += '_nee'
+    if integrator.use_drt:
+        suffix += '_drt'
+
+    output_dir = join(OUTPUT_DIR, 'test_integrators', f'test_volpathsimple_correctness{suffix}')
+    os.makedirs(output_dir, exist_ok=True)
 
     params = mi.traverse(scene)
     params.keep(['cube.interior_medium.sigma_t.data', 'cube.interior_medium.albedo.data'])
     assert len(params) == 2
 
     fd_cache = join(output_dir, 'fd.pickle')
-    @pickle_cache(fd_cache, overwrite=True)
+    @pickle_cache(fd_cache, overwrite=False)
     def get_fd_grads():
         return fd_gradients(output_dir, scene, params, loss_fn, eps=5e-3, spp=4096,
-                            write_images=True, integrator=integrator)
+                            write_images=True, integrator=integrator, seed=seed)
 
     volpathsimple_cache = join(output_dir, 'volpathsimple.pickle')
     @pickle_cache(volpathsimple_cache, overwrite=True)
@@ -294,7 +302,8 @@ def test_04_volpathsimple_correctness():
         for k, v in params.items():
             dr.enable_grad(v)
         # Note: too many spp will lead to precision error (accumulation)
-        img = mi.render(scene, integrator=integrator, seed=1234, params=params, spp=512)
+        img = mi.render(scene, integrator=integrator, params=params,
+                        spp=512, seed=seed)
         mi.Bitmap(img) \
           .convert(component_format=mi.Struct.Type.Float32) \
           .write(join(output_dir, 'volpathsimple_primal.exr'))

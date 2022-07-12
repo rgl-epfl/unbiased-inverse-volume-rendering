@@ -10,6 +10,7 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
     Some important assumptions are made:
     - There are no surfaces in the scene!
     - There is only one medium in the scene, contained within a convex bounding volume.
+    - The medium boundary must use a `null` BSDF
     - The only emitter is an infinite light source (e.g. `envmap` or `constant`).
     """
 
@@ -17,10 +18,18 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
         super().__init__(props=props)
 
         self.hide_emitters = props.get('hide_emitters', False)
+        # Enable the DRT sampling strategy for in-scattering gradients.
         self.use_drt = props.get('use_drt', True)
+        # Use the DRT sampling strategy only once per path.
+        # If disabled, the cost of the adjoint will grow quadratically with
+        # the path length due to the need to trace a recursive path.
         self.use_drt_subsample = props.get('use_drt_subsample', True)
-        self.use_drt_mis = props.get('use_drt_mis', True)
+        # Next event estimation: sample emitters at each volume interaction
         self.use_nee = props.get('use_nee', True)
+        # In the adjoint, use MIS to combine the specialized transmittance-only
+        # sampling technique (DRT) with the standard extinction-weighted transmittance
+        # sampling technique.
+        self.use_drt_mis = props.get('use_drt_mis', True)
 
         # TODO: support Russian Roulette or make it clear that it's disabled
 
@@ -36,7 +45,6 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
     ) -> Tuple[mi.Spectrum,
                mi.Bool, mi.Spectrum]:
 
-        # TODO: support adjoint
         primal = (mode == dr.ADMode.Primal)
         # TODO: support recursive calls with path_state (if really needed)
         path_state = None
@@ -155,14 +163,11 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
                                                  adj_weight,
                                                  did_scatter, did_escape)
                 del adj_weight
-
             # ----------
-
 
             # Account for albedo on subsequent bounces (no-op if there was no scattering)
             throughput *= albedo
             del albedo
-
 
 
             # Rays that have still not escaped but reached max depth
@@ -175,15 +180,32 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
             phase = mei.medium.phase_function()
             phase[~did_scatter] = dr.zeros(mi.PhaseFunctionPtr, 1)
             if self.use_nee:
+                if not primal:
+                    nee_sampler = sampler.clone()
+
                 active_e = did_scatter & active
-                nee_contrib = self.sample_emitter_for_nee(
-                    mei, scene, sampler, medium, channel, phase_ctx, phase,
-                    throughput, active_e)
+                emitted, ds = self.sample_emitter(mei, scene, sampler, medium, channel, active)
+                # Evaluate the phase function in the sampled direction.
+                # Assume that phase_val == phase_pdf (perfect importance sampling)
+                phase_val = phase.eval(phase_ctx, mei, ds.d, active)
+                phase_pdf = phase_val
+
+                nee_contrib = throughput * phase_val * mi.ad.common.mis_weight(ds.pdf, phase_pdf) * emitted
+
                 if primal:
-                    result[active_e] += dr.detach(nee_contrib)
+                    result[active_e] += nee_contrib
                 else:
-                    result[active_e] -= dr.detach(nee_contrib)
-                del active_e
+                    result[active_e] -= nee_contrib
+
+                    # Transmittance gradients due to the emitter sample's attenuation
+                    # by the medium. We re-run transmittance estimation here as another
+                    # application of path replay backpropagation.
+                    # TODO: any chance to avoid the second run?
+                    adjoint = δL * nee_contrib
+                    self.sample_emitter(mei, scene, nee_sampler, medium, channel, active,
+                                        adjoint=adjoint)
+                del active_e, emitted, ds, phase_val, phase_pdf, nee_contrib
+            # ----------
 
             # --- Phase function sampling
             # TODO: phase function gradients
@@ -192,11 +214,12 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
                 phase_ctx, mei, sampler.next_1d(did_scatter), sampler.next_2d(did_scatter), did_scatter)
             new_ray = mei.spawn_ray(wo)
             ray[did_scatter] = new_ray
+            # ----------
 
-            # Maintain some quantities needed at the end for NEE
+            # Maintain some quantities needed at the end for MIS with NEE
             if self.use_nee:
-                last_scatter_it[did_scatter] = dr.detach(mei)
-                last_scatter_direction_pdf[did_scatter] = dr.detach(phase_pdf)
+                last_scatter_it[did_scatter] = mei
+                last_scatter_direction_pdf[did_scatter] = phase_pdf
 
             # Update ray upper bound (medium boundary on the other side)
             needs_update = did_scatter | did_escape
@@ -212,17 +235,35 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
             # --- Handle escaped rays: cross the null boundary
             ray[did_escape] = si.spawn_ray(ray.d)  # Continue on the other side of the boundary
             escaped |= did_escape
+            # ----------
 
         # --- Envmap contribution
-        # TODO: envmap gradients
-        contrib, emitter_pdf, active_e = self.compute_envmap_contribution_and_update_si(
-            scene, ray, si, has_scattered, last_scatter_it, depth, escaped)
         if primal:
+            si_update_needed = escaped & si.is_valid()
+            si[si_update_needed] = scene.ray_intersect(ray, si_update_needed)
+            # All escaped rays can now query the envmap
+            emitter = si.emitter(scene)
+            active_e = escaped & dr.neq(emitter, None) & ~((depth <= 0) & self.hide_emitters)
+
             if self.use_nee:
+                assert last_scatter_it is not None
+                ds = mi.DirectionSample3f(scene, si, last_scatter_it)
+                emitter_pdf = emitter.pdf_direction(last_scatter_it, ds, active_e)
+                # MIS should be disabled (i.e. MIS weight = 1) if there wasn't even
+                # a valid interaction from which the emitter could have been sampled,
+                # e.g. in the case a ray escaped directly.
+                emitter_pdf = dr.select(has_scattered, emitter_pdf, 0.0)
                 hit_mis_weight = mi.ad.common.mis_weight(last_scatter_direction_pdf, emitter_pdf)
             else:
+                emitter_pdf = None
                 hit_mis_weight = 1.0
-            result[active_e] = result + throughput * hit_mis_weight * contrib
+
+            # TODO: envmap gradients
+            contrib = emitter.eval(si, active_e)
+            result[active_e] += throughput * hit_mis_weight * contrib
+
+            del si_update_needed, emitter, active_e, contrib
+
 
         return result, active, result
 
@@ -312,18 +353,6 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
         return mei, weight
 
 
-    def sample_emitter_for_nee(self, mei, scene, sampler, medium, channel,
-                               phase_ctx, phase, throughput, active):
-        emitted, ds = self.sample_emitter(mei, scene, sampler, medium, channel, active)
-        # Evaluate the phase function in the sampled direction.
-        # Assume that phase_val == phase_pdf (perfect importance sampling)
-        phase_val = phase.eval(phase_ctx, mei, ds.d, active)
-        phase_pdf = phase_val
-
-        nee_contrib = throughput * phase_val * mi.ad.common.mis_weight(ds.pdf, phase_pdf) * emitted
-        return nee_contrib
-
-
     def sample_emitter(self, ref_interaction, scene, sampler, medium, channel, active,
                        adjoint=None):
         """
@@ -334,20 +363,14 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
         - presence of surfaces within the medium
         - propagating adjoint radiance (adjoint pass)
         """
-        # TODO: also backprop w.r.t. emitter value
-
         active = mi.Mask(active)
-        # Assuming there's a single medium, avoids one vcall
-        # medium = self.medium
 
         dir_sample = sampler.next_2d(active)
         ds, emitter_val = scene.sample_emitter_direction(ref_interaction, dir_sample,
                                                          False, active)
         sampling_worked = dr.neq(ds.pdf, 0.0)
-        emitter_val[~sampling_worked] = 0.0
-        emitter_val = dr.detach(emitter_val)
+        emitter_val &= sampling_worked
         active &= sampling_worked
-
 
         # Trace a ray toward the emitter and find the medium's bbox
         # boundary in that direction.
@@ -393,25 +416,34 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
         while loop(active):
             # TODO: support majorant supergrid in-line to avoid restarting DDA traversal each time
             # Handle medium interactions / transmittance
-            mei = medium.sample_interaction(ray, sampler.next_1d(active), channel, active)
+            with dr.resume_grad(when=adjoint is not None):
+                mei = medium.sample_interaction(
+                    ray, sampler.next_1d(active), channel, active)
+                # Ratio tracking for transmittance estimation:
+                # update throughput estimate with probability of sampling a null-scattering event.
+                tr_contribution = dr.select(
+                    dr.neq(mei.combined_extinction, 0),
+                    mei.sigma_n / mei.combined_extinction,
+                    mei.sigma_n)
+
+            # If interaction falls out of bounds, we don't have anything
+            # valid to accumulate.
             mei.t[active & (mei.t > tmax)] = dr.inf
-            # If interaction falls out of bounds, we don't have anything valid to accumulate
             active &= mei.is_valid()
 
-            # Ratio tracking for transmittance estimation:
-            # update throughput estimate with probability of sampling a null-scattering event.
-            tr_contribution = dr.select(
-                dr.neq(mei.combined_extinction, 0),
-                mei.sigma_n / mei.combined_extinction,
-                mei.sigma_n)
-
             if adjoint is not None:
+                # Here again, a `transmittance` factor cancels out:
+                #   (δL * transmittance) * contrib
+                #   * (Li / (transmittance * detach(contrib)))
                 active_adj = active & (tr_contribution > 0.0)
-                dr.backward_from(tr_contribution * dr.select(
-                    active_adj, dr.detach(adjoint / tr_contribution), 0.0))
+                with dr.resume_grad():
+                    dr.backward_from(dr.select(
+                        active_adj,
+                        adjoint * tr_contribution / dr.detach(tr_contribution),
+                        0.0))
 
             # Apply effect of this interaction
-            transmittance[active] = transmittance * dr.detach(tr_contribution)
+            transmittance[active] *= tr_contribution
             # Adopt newly sampled position in the medium
             ray.o[active] = mei.p
             tmax[active] = tmax - mei.t
@@ -421,29 +453,6 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
             active &= dr.any(dr.neq(transmittance, 0.0))
 
         return transmittance
-
-
-
-    def compute_envmap_contribution_and_update_si(self, scene, ray, si, has_scattered,
-                                                  last_scatter_it, depth, escaped):
-        si_update_needed = escaped & si.is_valid()
-        si[si_update_needed] = scene.ray_intersect(ray, si_update_needed)
-        # All escaped rays can now query the envmap
-        emitter = si.emitter(scene)
-        active_e = escaped & dr.neq(emitter, None) & ~((depth <= 0) & self.hide_emitters)
-
-        if self.use_nee:
-            assert last_scatter_it is not None
-            ds = mi.DirectionSample3f(scene, si, last_scatter_it)
-            emitter_pdf = emitter.pdf_direction(last_scatter_it, ds, active_e)
-            # MIS should be disabled (i.e. MIS weight = 1) if there wasn't even
-            # a valid interaction from which the emitter could have been sampled,
-            # e.g. in the case a ray escaped directly.
-            emitter_pdf = dr.select(has_scattered, emitter_pdf, 0.0)
-        else:
-            emitter_pdf = None
-
-        return emitter.eval(si, active_e), emitter_pdf, active_e
 
 
     def backpropagate_transmittance(self, medium, alt_sampler, si, mei, ray,
