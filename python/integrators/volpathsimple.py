@@ -1,4 +1,5 @@
 from __future__ import annotations # Delayed parsing of type annotations
+import struct
 
 import drjit as dr
 import mitsuba as mi
@@ -42,7 +43,8 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
 
         ray = mi.Ray3f(ray)
         wavefront_size = dr.width(ray.d)
-        result, throughput = mi.Spectrum(0.0), mi.Spectrum(1.0)
+        result = mi.Spectrum(0. if primal else state_in)
+        throughput = mi.Spectrum(1.0)
         medium = dr.zeros(mi.MediumPtr, wavefront_size)
         channel = 0
 
@@ -76,12 +78,22 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
                 has_scattered = mi.Mask(False)
                 last_scatter_direction_pdf = mi.Float(1.0)
         else:
-            has_scattered = None
-            last_scatter_it = None
-            last_scatter_direction_pdf = None
+            has_scattered = last_scatter_it = last_scatter_direction_pdf = None
+
+        alt_sampler = None
+        alt_seed_rnd = sampler.next_1d(active)
+        if not primal:
+            # We need a secondary sampler in order to keep the
+            # primary sequence of random numbers identical between
+            # the primal and adjoint passes (required by PRB).
+            alt_seed = struct.unpack('!I', struct.pack('!f', alt_seed_rnd[0]))[0]
+            alt_seed = mi.sample_tea_32(alt_seed, 1)[0]
+            alt_sampler = sampler.fork()
+            alt_sampler.seed(alt_seed, sampler.wavefront_size())
+        del alt_seed_rnd
 
         loop = mi.Loop("VolpathSimpleSampleLoop", lambda: (
-            active, escaped, depth, ray, medium, throughput, si, result, sampler,
+            active, escaped, depth, ray, medium, throughput, si, result, sampler, alt_sampler,
             has_scattered, last_scatter_it, last_scatter_direction_pdf))
 
         while loop(active):
@@ -93,11 +105,10 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
             throughput[perform_rr] = throughput * dr.rcp(dr.detach(q))
 
             # Handle medium sampling and potential medium escape
-            needs_differentiable_weight = False #self.use_autodiff
             # For technical reason, it's better to use a single pointer
             # to the only medium in the scene than the `medium` pointer array
             mei, mei_weight = self.sample_real_interaction(
-                medium, ray, sampler, channel, active, needs_differentiable_weight)
+                medium, ray, sampler, channel, active, primal)
             throughput[active] = throughput * mei_weight
 
             did_escape = active & (~mei.is_valid())
@@ -109,10 +120,50 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
             if self.use_nee:
                 has_scattered |= did_scatter
 
-            # Real scattering: add effect of albedo
-            albedo = medium.get_albedo(mei, did_scatter)
-            throughput[did_scatter] = throughput * albedo
+            # --- Scattering gradients
+            with dr.resume_grad(when=not primal):
+                albedo = dr.select(did_scatter, medium.get_albedo(mei, did_scatter), 1.0)
+                if not primal:
+                    if self.use_drt:
+                        raise NotImplementedError('sigma_t & albedo gradients with DRT')
+                    else:
+                        # Without DRT: sampling probability is sigma_t(t) * T(t).
+                        # It's exactly this remaining 1/sigma_t factor that DRT
+                        # aims to eliminate.
+                        inv_pdf = dr.rcp(dr.detach(mei.sigma_t))
+                        # Note: a detached `throughput` factor cancels out, since
+                        # we need to divide Li by `throughput` as well:
+                        #    (δL * throughput) * (sigma_t albedo)
+                        #    * (result / (throughput * detach(albedo)))
+                        Li = dr.detach(result / dr.maximum(1e-8, albedo))
+                        dr.backward_from(δL * (mei.sigma_t * albedo) * Li * inv_pdf)
+                        del Li, inv_pdf
+            # ----------
+
+            # --- Transmittance gradients
+            # We resample uniformly along the last step within the medium.
+            # Note: this could also be handled by backpropagating through
+            # null interactions, but then the 1/sigma_n factor from the
+            # pdf also becomes problematic at locations where sigma_t is
+            # very close to the majorant.
+            if not primal:
+                # Note: here, `throughput * albedo` cancelled out:
+                #   δL * (throughput * albedo) * (-sigma_t)
+                #   * (result / (throughput * albedo))
+                adj_weight = δL * result
+                self.backpropagate_transmittance(medium, alt_sampler, si, mei, ray,
+                                                 adj_weight,
+                                                 did_scatter, did_escape)
+                del adj_weight
+
+            # ----------
+
+
+            # Account for albedo on subsequent bounces (no-op if there was no scattering)
+            throughput *= albedo
             del albedo
+
+
 
             # Rays that have still not escaped but reached max depth
             # are killed inside of the medium (zero contribution)
@@ -128,10 +179,14 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
                 nee_contrib = self.sample_emitter_for_nee(
                     mei, scene, sampler, medium, channel, phase_ctx, phase,
                     throughput, active_e)
-                result[active_e] = result + dr.detach(nee_contrib)
+                if primal:
+                    result[active_e] += dr.detach(nee_contrib)
+                else:
+                    result[active_e] -= dr.detach(nee_contrib)
                 del active_e
 
             # --- Phase function sampling
+            # TODO: phase function gradients
             # Note: assuming phase_pdf = 1 (perfect importance sampling)
             wo, phase_pdf = phase.sample(
                 phase_ctx, mei, sampler.next_1d(did_scatter), sampler.next_2d(did_scatter), did_scatter)
@@ -159,14 +214,15 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
             escaped |= did_escape
 
         # --- Envmap contribution
+        # TODO: envmap gradients
         contrib, emitter_pdf, active_e = self.compute_envmap_contribution_and_update_si(
             scene, ray, si, has_scattered, last_scatter_it, depth, escaped)
-        if self.use_nee:
-            hit_mis_weight = mi.ad.common.mis_weight(last_scatter_direction_pdf, emitter_pdf)
-        else:
-            hit_mis_weight = 1.0
-        result[active_e] = result + throughput * hit_mis_weight * contrib
-        del contrib, emitter_pdf, active_e, hit_mis_weight
+        if primal:
+            if self.use_nee:
+                hit_mis_weight = mi.ad.common.mis_weight(last_scatter_direction_pdf, emitter_pdf)
+            else:
+                hit_mis_weight = 1.0
+            result[active_e] = result + throughput * hit_mis_weight * contrib
 
         return result, active, result
 
@@ -200,8 +256,7 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
 
 
 
-    def sample_real_interaction(self, medium, ray, sampler, channel, _active,
-                                needs_differentiable_weight):
+    def sample_real_interaction(self, medium, ray, sampler, channel, _active, is_primal):
         """
         `Medium::sample_interaction` returns an interaction that could be a null interaction.
         Here, we loop until a real interaction is sampled.
@@ -227,8 +282,6 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
             active, weight, mei, running_ray, running_t, sampler))
         while loop(active):
             mei_next = medium.sample_interaction(running_ray, sampler.next_1d(active), channel, active)
-            if not needs_differentiable_weight:
-                mei_next = dr.detach(mei_next)
             mei[active] = mei_next
             mei.t[active] = mei.t + running_t
 
@@ -239,22 +292,6 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
             # until they find a real interaction.
             active &= mei_next.is_valid()
             did_null_scatter = active & (sampler.next_1d(active) >= r)
-
-            if needs_differentiable_weight:
-                # With DRT and some other variants, this AD-constructed weight is never used.
-                # Disabling it enables using symbolic loops.
-
-                # TODO: does this correctly handle surfaces within the medium? (via ray.maxt probably)
-                # These lanes found a real interaction
-                did_scatter = (~did_null_scatter) & active
-                event_pdf = dr.select(dr.neq(mei_next.combined_extinction, 0),
-                                    mei_next.sigma_t / mei_next.combined_extinction, 0)
-                event_pdf = dr.select(did_scatter, event_pdf, 1. - event_pdf)
-                weight[active] = weight * dr.select(
-                    dr.neq(event_pdf, 0.),
-                    event_pdf / dr.detach(event_pdf),
-                    1.
-                )
 
             active &= did_null_scatter
             # Update ray to only sample points further than the
@@ -268,9 +305,9 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
         did_sample = _active & mei.is_valid()
         mei.p = dr.select(did_sample, ray(mei.t), dr.nan)
         mei.mint = mi.Float(dr.nan)  # Value was probably wrong, so we make sure it's unused
-        # The final medium property values should be attached,
-        # regardless of `needs_differentiable_weight`
-        mei.sigma_s, mei.sigma_n, mei.sigma_t = medium.get_scattering_coefficients(mei, did_sample)
+        with dr.resume_grad(when=not is_primal):
+            mei.sigma_s, mei.sigma_n, mei.sigma_t = \
+                medium.get_scattering_coefficients(mei, did_sample)
 
         return mei, weight
 
@@ -409,6 +446,30 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
         return emitter.eval(si, active_e), emitter_pdf, active_e
 
 
+    def backpropagate_transmittance(self, medium, alt_sampler, si, mei, ray,
+                                    adj_weight,
+                                    did_scatter, did_escape, n_samples=4):
+        active = did_scatter | did_escape
+        interval = dr.select(did_escape, si.t, mei.t)
+
+        mei_sub = mi.MediumInteraction3f(mei)
+        contribs = mi.Spectrum(0.)
+        # Pick `n_samples` uniformly over the interval
+        # TODO: consider stratified sampling
+        for _ in range(n_samples):
+            mei_sub.t = alt_sampler.next_1d(active) * interval
+            mei_sub.p = ray(mei_sub.t)
+            with dr.resume_grad():
+                _, _, sigma_t_sub = medium.get_scattering_coefficients(mei_sub, active)
+                # The higher sigma_t, the lower the transmittance
+                contribs -= sigma_t_sub
+        del mei_sub
+
+        # Probability of sampling each of the new distances
+        inv_pdf = interval / n_samples
+        with dr.resume_grad():
+            contribs = dr.select(active, contribs, 0.)
+            dr.backward_from(adj_weight * contribs * inv_pdf)
 
 
 mi.register_integrator("volpathsimple", lambda props: VolpathSimpleIntegrator(props))
