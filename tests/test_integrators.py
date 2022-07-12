@@ -13,12 +13,12 @@ import numpy as np
 
 from constants import SCENE_DIR, OUTPUT_DIR
 from fd import fd_gradients
-from util import pickle_cache, gallery
+from util import pickle_cache, render_cache, gallery
 
 
 def cube_test_scene(resx=128, resy=128, spp=16, pixel_format='rgb', sample_emitters=True,
-                    density_scale=1.0):
-    T = mi.scalar_rgb.ScalarTransform4f
+                    density_scale=1.0, use_fast_path=False):
+    T = mi.ScalarTransform4f
 
     grids = [np.full((3, 3, 3, k), 1.0, dtype=np.float32) for k in (1, 3)]
     # Add some basic spatial variations
@@ -33,13 +33,15 @@ def cube_test_scene(resx=128, resy=128, spp=16, pixel_format='rgb', sample_emitt
         grids[1][i, :, :, 0] *= np.square((i+1) / grids[1].shape[0])
         grids[1][i, :, :, 1] *= 1 - (i+1) / grids[1].shape[0]
         grids[1][:, i, :, 1] *= np.square((i+1) / grids[1].shape[0])
+    # Albedo grid
+    grids.append(np.clip(grids[1], 0, 1))
 
     grids = [mi.VolumeGrid(g) for g in grids]
     to_world = T.translate([-0.5, -0.5, -0.5]).scale([2, 2, 2])
 
     return {
         'type': 'scene',
-        'use_bbox_fast_path': False,
+        'use_bbox_fast_path': use_fast_path,
         # -------------------- Sensor --------------------
         'sensor': {
             'type': 'perspective',
@@ -95,7 +97,7 @@ def cube_test_scene(resx=128, resy=128, spp=16, pixel_format='rgb', sample_emitt
             },
             'albedo': {
                 'type': 'gridvolume',
-                'grid': grids[1],
+                'grid': grids[2],
                 'to_world': to_world,
             },
         },
@@ -223,17 +225,119 @@ def test_03_volpathsimple_basic():
     mi.set_variant('cuda_ad_rgb')
     from integrators.volpathsimple import VolpathSimpleIntegrator
 
-    scene_dict = cube_test_scene()
+    scene_dict = cube_test_scene(density_scale=2.0)
     scene = mi.load_dict(scene_dict)
-    # integrator = mi.load_dict({ 'type': 'volpath', })
-    integrator = mi.load_dict({ 'type': 'volpathsimple', })
+    integrators = {
+        'volpath': mi.load_dict({
+            'type': 'volpath',
+            'max_depth': 64,
+            'rr_depth': 999,
+        }),
+        'volpathsimple':  mi.load_dict({
+            'type': 'volpathsimple',
+            'max_depth': 64,
+            'use_nee': True,
+            'rr_depth': 999,
+        }),
+    }
 
-    img = mi.render(scene, integrator=integrator, spp=128)
-    fname = join(output_dir, 'preview.exr')
-    mi.Bitmap(img).write(fname)
-    print(f'[+] {fname}')
+    results = {}
+    for k, integrator in integrators.items():
+        fname = join(output_dir, f'preview_{k}.exr')
+        @render_cache(fname, overwrite=False)
+        def fn():
+            return mi.render(scene, integrator=integrator, spp=4096)
+        results[k] = fn()
+
+    ref_integrator = 'volpath'
+    for k, image in results.items():
+        if k != ref_integrator:
+            a = image
+            b = results[ref_integrator]
+            assert np.allclose(a, b, atol=5e-2)
+
+
+
+def test_04_volpathsimple_correctness():
+    output_dir = join(OUTPUT_DIR, 'test_integrators', 'test_volpathsimple_correctness')
+    os.makedirs(output_dir, exist_ok=True)
+    mi.set_variant('cuda_ad_rgb_double')
+    from integrators.volpathsimple import VolpathSimpleIntegrator
+
+    scene_dict = cube_test_scene(density_scale=2.0)
+    scene = mi.load_dict(scene_dict)
+    integrator = mi.load_dict({
+        'type': 'volpathsimple',
+        # TODO
+        # 'max_depth': 1,
+        'max_depth': 64,
+        'rr_depth': 999,
+        # TODO: test both
+        'use_drt': False,
+        # TODO: test both
+        'use_nee': False,
+    })
+
+    params = mi.traverse(scene)
+    params.keep(['cube.interior_medium.sigma_t.data', 'cube.interior_medium.albedo.data'])
+    assert len(params) == 2
+
+    fd_cache = join(output_dir, 'fd.pickle')
+    @pickle_cache(fd_cache, overwrite=True)
+    def get_fd_grads():
+        return fd_gradients(output_dir, scene, params, loss_fn, eps=5e-3, spp=4096,
+                            write_images=True, integrator=integrator)
+
+    volpathsimple_cache = join(output_dir, 'volpathsimple.pickle')
+    @pickle_cache(volpathsimple_cache, overwrite=True)
+    def get_volpathsimple_grads():
+        for k, v in params.items():
+            dr.enable_grad(v)
+        # Note: too many spp will lead to precision error (accumulation)
+        img = mi.render(scene, integrator=integrator, seed=1234, params=params, spp=512)
+        mi.Bitmap(img) \
+          .convert(component_format=mi.Struct.Type.Float32) \
+          .write(join(output_dir, 'volpathsimple_primal.exr'))
+        loss = loss_fn(img)
+        dr.backward(loss)
+        return { k: dr.grad(v).numpy() for k, v in params.items() }
+
+    # Test closeness of gradients
+    # The automated threshold is quite relaxed and allows for a
+    # a few entries disagreeing relatively significantly.
+    results = {}
+    results['fd'] = get_fd_grads()
+    results['volpathsimple'] = get_volpathsimple_grads()
+    ref_method = 'fd'
+    rtol = 3e-2
+    for method, grads in results.items():
+        for k, g in grads.items():
+            for c in range(g.shape[-1]):
+                img = gallery(g[..., c][..., None])
+                fname = join(output_dir, f'grads_{k}_{c}_{method}.exr')
+                mi.Bitmap(img.astype(np.float32)).write(fname)
+                print(f'[+] {fname}')
+
+                if method != ref_method:
+                    a = g[..., c]
+                    b = results[ref_method][k][..., c]
+                    bad = np.sum(np.abs(a - b) >= rtol * np.abs(b))
+                    if bad > 0:
+                        print(a)
+                        print('vs')
+                        print(b)
+                        print('relative:')
+                        print(np.abs(a - b) / np.abs(b))
+                    # TODO: re-enable this
+                    if False:
+                        assert bad <= 3, (method, k, c, bad)
+                        # Upper bound even on bad entries (very tolerant)
+                        assert np.allclose(a, b, rtol=0.75), (method, k, c, bad)
+
+
 
 
 if __name__ == '__main__':
     # test_02_nerf_correctness()
-    test_03_volpathsimple_basic()
+    # test_03_volpathsimple_basic()
+    test_04_volpathsimple_correctness()

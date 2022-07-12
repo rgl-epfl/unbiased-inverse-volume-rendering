@@ -14,7 +14,9 @@ def fd_gradients(output_dir, scene, params, loss_fn, eps,
     loss_center = loss_fn(im_center)
     if write_images:
         fname = join(output_dir, f'fd_center.exr')
-        mi.Bitmap(im_center).write(fname)
+        mi.Bitmap(im_center) \
+            .convert(component_format=mi.Struct.Type.Float32) \
+            .write(fname)
         print(f'[+] {fname}')
 
     results = {}
@@ -55,7 +57,9 @@ def fd_gradients(output_dir, scene, params, loss_fn, eps,
 
             if write_images:
                 fname = join(output_dir, f'fd_{run_i}_{k_suffix}.exr')
-                mi.Bitmap(im_offset).write(fname)
+                mi.Bitmap(im_offset) \
+                  .convert(component_format=mi.Struct.Type.Float32) \
+                  .write(fname)
                 print(k, ci, k_suffix, fname)
 
         results[k] = grads
