@@ -217,22 +217,23 @@ def test_02_nerf_correctness():
 
 
 
-def test_03_weird_grid():
-    output_dir = join(OUTPUT_DIR, 'test_integrators', 'test_weird_grid')
+def test_03_volpathsimple_basic():
+    output_dir = join(OUTPUT_DIR, 'test_integrators', 'test_volpathsimple_basic')
     os.makedirs(output_dir, exist_ok=True)
     mi.set_variant('cuda_ad_rgb')
-    from integrators.nerf import NeRFIntegrator
+    from integrators.volpathsimple import VolpathSimpleIntegrator
 
     scene_dict = cube_test_scene()
     scene = mi.load_dict(scene_dict)
     # integrator = mi.load_dict({ 'type': 'volpath', })
-    integrator = mi.load_dict({ 'type': 'nerf', })
+    integrator = mi.load_dict({ 'type': 'volpathsimple', })
 
-    img = mi.render(scene, integrator=integrator, spp=64)
+    img = mi.render(scene, integrator=integrator, spp=128)
     fname = join(output_dir, 'preview.exr')
     mi.Bitmap(img).write(fname)
     print(f'[+] {fname}')
 
 
 if __name__ == '__main__':
-    test_02_nerf_correctness()
+    # test_02_nerf_correctness()
+    test_03_volpathsimple_basic()
