@@ -19,7 +19,10 @@ def query_t_for_step(step_j, step_size, jitter_sample, jittering_enabled, mint=0
 
 class NeRFIntegrator(mi.ad.integrators.common.RBIntegrator):
     """
-    NeRF-style integrator with emission accumulated along the ray (no scattering).
+    Simplified NeRF-style integrator with emission accumulated along the ray (no scattering).
+    Limitations:
+    - backed by a dense grid instead of a neural network
+    - no direction-dependent emission
     """
     def __init__(self, props=mi.Properties()):
         super().__init__(props=props)
@@ -66,12 +69,16 @@ class NeRFIntegrator(mi.ad.integrators.common.RBIntegrator):
         mei.wavelengths = ray.wavelengths
         mei.medium = si.target_medium(ray.d)
 
-        # We will simulate rays that encountered a medium
+        # We will only simulate rays that encountered a medium
         active = si.is_valid() & dr.neq(mei.medium, None)
         escaped = ~active
         ray[active] = si.spawn_ray(ray.d)
 
-        # 2. Ray-march inside medium, accumulating emission
+        # 2. Find the other side of the medium bbox
+        si[active] = scene.ray_intersect(ray, active)
+        active &= si.is_valid()
+
+        # 3. Ray-march inside medium, accumulating emission
         step_size = step_size_for_marching(self.queries_per_ray, 0, si.t,
                                            self.jittering_enabled)
         t_a = mi.Float(0.)
@@ -98,6 +105,7 @@ class NeRFIntegrator(mi.ad.integrators.common.RBIntegrator):
                                         dr.exp(-sigma * actual_step),
                                         1.0)
                 weight = (1.0 - alpha_recip) * throughput
+                safe_alpha_recip = alpha_recip + 1e-10
 
             if primal:
                 result[still_walking] += weight * emission
@@ -108,34 +116,32 @@ class NeRFIntegrator(mi.ad.integrators.common.RBIntegrator):
             t_a[still_walking] = t_b
             still_walking &= step_j < self.queries_per_ray
 
-            throughput[still_walking] = throughput * (alpha_recip + 1e-10)
-            weights_sum[still_walking] = weights_sum + weight
+            throughput[still_walking] *= safe_alpha_recip
+            weights_sum[still_walking] += weight
 
             if mode == dr.ADMode.Backward:
-                # TODO: check this
                 with dr.resume_grad():
-                    dr.backward_from(δL * (weight * emission) * result)
+                    dr.backward_from(δL * (
+                        # Contribution from emission and sigma_t at this step
+                        emission * weight
+                        # Contribution from sigma_t at later steps
+                        + (result / dr.detach(safe_alpha_recip)) * safe_alpha_recip
+                    ))
 
         # Traverse the other medium boundary.
         # Note: we assume a convex medium boundary, i.e. the medium is
         # encountered at most once per ray.
-        si[active] = scene.ray_intersect(ray, active)
         ray[active] = si.spawn_ray(ray.d)
         si[active] = scene.ray_intersect(ray, active)
 
-        # 3. Composite with background emitter
-        # with dr.resume_grad(when=not primal):
-        #     contrib = (1 - weights_sum) * emitter.eval(si, active_e)
-            # if mode == dr.ADMode.Backward:
-            #     # TODO: somehow do this inside of the loop? Or maybe actually already accounted for.
-            #     dr.backward_from(δL * contrib)
+        # 5. Composite with background emitter
         emitter = si.emitter(scene)
         active_e = (escaped | active) & dr.neq(emitter, None)
         if self.hide_emitters:
             # TODO: is that correct pre-multiplied alpha handling?
             active_e &= (weights_sum > 0)
 
-        if primal:
+        if True or primal:
             contrib = (1 - weights_sum) * emitter.eval(si, active_e)
             result[active_e] += contrib
 
