@@ -23,7 +23,7 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
         # Use the DRT sampling strategy only once per path.
         # If disabled, the cost of the adjoint will grow quadratically with
         # the path length due to the need to trace a recursive path.
-        self.use_drt_subsample = props.get('use_drt_subsample', True)
+        self.use_drt_subsampling = props.get('use_drt_subsampling', True)
         # Next event estimation: sample emitters at each volume interaction
         self.use_nee = props.get('use_nee', True)
         # In the adjoint, use MIS to combine the specialized transmittance-only
@@ -41,35 +41,33 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
                δL: Optional[mi.Spectrum] = None,
                state_in: Optional[mi.Spectrum] = None,
                active: mi.Bool = None,
+               path_state: PathState = None,
                **kwargs # Absorbs unused arguments
     ) -> Tuple[mi.Spectrum,
                mi.Bool, mi.Spectrum]:
 
         primal = (mode == dr.ADMode.Primal)
-        # TODO: support recursive calls with path_state (if really needed)
-        path_state = None
 
         ray = mi.Ray3f(ray)
         wavefront_size = dr.width(ray.d)
         result = mi.Spectrum(0. if primal else state_in)
         throughput = mi.Spectrum(1.0)
-        medium = dr.zeros(mi.MediumPtr, wavefront_size)
+        medium = self.get_single_medium(scene)
         channel = 0
 
         if path_state is not None:
-            # Recursive ray (detached, e.g. for RBP)
+            # Recursive ray (detached, e.g. for DRT)
+            assert primal, 'Cannot trace attached recursive rays'
             active = path_state.active()
             depth = path_state.depth()
             si = path_state.si()
-            assert False, 'Need to handle self.medium'
-            medium = dr.select(active, mi.MediumPtr(self.medium), medium)  # Assuming a single medium
             escaped = path_state.escaped()
         else:
             active = mi.Mask(True)
             depth = dr.zeros(mi.Int32, wavefront_size)
             sampler.next_1d(active) # This is the random number normally used to sample a Color channel in C++
             # Intersect medium bbox and traverse the boundary
-            si, escaped = self.reach_medium(scene, ray, medium, active)
+            si, escaped = self.reach_medium(scene, ray, active)
         # Note: at this point, `active` only includes lanes that do need to traverse the medium.
 
         if self.use_nee:
@@ -78,7 +76,7 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
             # a path that just escaped the bbox. It allows us not to maintain
             # a whole MediumInteraction as part of the recursive state.
             last_scatter_it = dr.zeros(mi.Interaction3f)
-            last_scatter_it[escaped] = dr.detach(si)
+            last_scatter_it[escaped] = si
             if path_state is not None:
                 has_scattered = active & (~escaped)
                 last_scatter_direction_pdf = path_state.last_scatter_direction_pdf()
@@ -101,10 +99,11 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
         del alt_seed_rnd
 
         loop = mi.Loop("VolpathSimpleSampleLoop", lambda: (
-            active, escaped, depth, ray, medium, throughput, si, result, sampler, alt_sampler,
+            active, escaped, depth, ray, throughput, si, result, sampler, alt_sampler,
             has_scattered, last_scatter_it, last_scatter_direction_pdf))
 
         while loop(active):
+
             # Russian Roulette (taking eta = 1.0)
             q = dr.minimum(dr.max(throughput), 0.99)
             perform_rr = (depth > self.rr_depth)
@@ -131,21 +130,37 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
             # --- Scattering gradients
             with dr.resume_grad(when=not primal):
                 albedo = dr.select(did_scatter, medium.get_albedo(mei, did_scatter), 1.0)
-                if not primal:
-                    if self.use_drt:
-                        raise NotImplementedError('sigma_t & albedo gradients with DRT')
-                    else:
-                        # Without DRT: sampling probability is sigma_t(t) * T(t).
-                        # It's exactly this remaining 1/sigma_t factor that DRT
-                        # aims to eliminate.
-                        inv_pdf = dr.rcp(dr.detach(mei.sigma_t))
-                        # Note: a detached `throughput` factor cancels out, since
-                        # we need to divide Li by `throughput` as well:
-                        #    (δL * throughput) * (sigma_t albedo)
-                        #    * (result / (throughput * detach(albedo)))
-                        Li = dr.detach(result / dr.maximum(1e-8, albedo))
-                        dr.backward_from(δL * (mei.sigma_t * albedo) * Li * inv_pdf)
-                        del Li, inv_pdf
+            if not primal:
+                if self.use_drt:
+                    # This time `throughput` does *not* cancel out, since it
+                    # will not be included in `drt_Li`.
+                    adjoint = (δL * throughput)
+                    self.backpropagate_scattering_drt(
+                        scene, medium, alt_sampler, ray, si, depth, channel,
+                        adjoint, active)
+                    del adjoint
+
+                if (not self.use_drt) or self.use_drt_mis:
+                    drt_mis_weight = 1.0
+                    if self.use_drt_mis:
+                        # Note: MIS weight hardcoded for the power heuristic
+                        s2 = dr.sqr(mei.sigma_t)
+                        drt_mis_weight = s2 / (1 + s2)
+
+                    # Without DRT: sampling probability is sigma_t(t) * T(t).
+                    # It's exactly this remaining 1/sigma_t factor that DRT
+                    # aims to eliminate.
+                    inv_pdf = dr.rcp(mei.sigma_t)
+                    # Note: a detached `throughput` factor cancels out, since
+                    # we need to divide Li by `throughput` as well:
+                    #    (δL * throughput) * (sigma_t albedo)
+                    #    * (result / (throughput * detach(albedo)))
+                    Li = result / dr.maximum(1e-8, albedo)
+
+                    with dr.resume_grad():
+                        dr.backward_from(drt_mis_weight * δL * (mei.sigma_t * albedo)
+                                         * Li * inv_pdf)
+                    del Li, inv_pdf, drt_mis_weight
             # ----------
 
             # --- Transmittance gradients
@@ -180,31 +195,14 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
             phase = mei.medium.phase_function()
             phase[~did_scatter] = dr.zeros(mi.PhaseFunctionPtr, 1)
             if self.use_nee:
-                if not primal:
-                    nee_sampler = sampler.clone()
-
-                active_e = did_scatter & active
-                emitted, ds = self.sample_emitter(mei, scene, sampler, medium, channel, active)
-                # Evaluate the phase function in the sampled direction.
-                # Assume that phase_val == phase_pdf (perfect importance sampling)
-                phase_val = phase.eval(phase_ctx, mei, ds.d, active)
-                phase_pdf = phase_val
-
-                nee_contrib = throughput * phase_val * mi.ad.common.mis_weight(ds.pdf, phase_pdf) * emitted
-
+                nee_contrib = self.sample_emitter_for_nee(
+                    mei, scene, sampler, medium, channel, phase_ctx, phase, throughput,
+                    active & did_scatter, primal=primal, δL=δL)
                 if primal:
                     result[active_e] += nee_contrib
                 else:
                     result[active_e] -= nee_contrib
-
-                    # Transmittance gradients due to the emitter sample's attenuation
-                    # by the medium. We re-run transmittance estimation here as another
-                    # application of path replay backpropagation.
-                    # TODO: any chance to avoid the second run?
-                    adjoint = δL * nee_contrib
-                    self.sample_emitter(mei, scene, nee_sampler, medium, channel, active,
-                                        adjoint=adjoint)
-                del active_e, emitted, ds, phase_val, phase_pdf, nee_contrib
+                del nee_contrib
             # ----------
 
             # --- Phase function sampling
@@ -268,8 +266,21 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
         return result, active, result
 
 
+    def get_single_medium(self, scene):
+        """
+        Since we only support a very restricted setup (single medium within a single
+        bounding shape), we can extract the only medium pointer within the scene
+        and use is for all subsequent method calls. This avoids expensive virtual
+        function calls on array pointers.
+        """
+        shapes = scene.shapes()
+        assert len(shapes) == 1, f'Not supported: more than 1 shape in the scene (found {len(shapes)}).'
+        medium = shapes[0].interior_medium()
+        assert medium is not None, 'Expected a single shape with an interior medium.'
+        return medium
 
-    def reach_medium(self, scene, ray, medium, active):
+
+    def reach_medium(self, scene, ray, active):
         """
         In this simplified setting, rays either hit the medium's bbox and
         go in or escape directly to infinity.
@@ -289,7 +300,10 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
         # originally hitting the medium bbox.
         active &= si_new.is_valid()
 
-        medium[active] = si.target_medium(ray.d)
+        # If we lifted the restriction on the number of media,
+        # we would need to get the correct pointers now.
+        # medium[active] = si.target_medium(ray.d)
+
         ray.maxt[active] = dr.select(dr.isfinite(si_new.t), si_new.t, dr.largest(mi.Float))
         si[active] = si_new
 
@@ -322,7 +336,8 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
         loop = mi.Loop("medium_sample_interaction_real", lambda: (
             active, weight, mei, running_ray, running_t, sampler))
         while loop(active):
-            mei_next = medium.sample_interaction(running_ray, sampler.next_1d(active), channel, active)
+            mei_next = medium.sample_interaction(running_ray, sampler.next_1d(active),
+                                                 channel, active)
             mei[active] = mei_next
             mei.t[active] = mei.t + running_t
 
@@ -353,6 +368,32 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
         return mei, weight
 
 
+    def sample_emitter_for_nee(self, mei, scene, sampler, medium, channel,
+                               phase_ctx, phase, throughput, active, primal=True, δL=None):
+        if not primal:
+            nee_sampler = sampler.clone()
+
+        emitted, ds = self.sample_emitter(mei, scene, sampler, medium, channel, active)
+        # Evaluate the phase function in the sampled direction.
+        # Assume that phase_val == phase_pdf (perfect importance sampling)
+        phase_val = phase.eval(phase_ctx, mei, ds.d, active)
+        phase_pdf = phase_val
+
+        nee_contrib = throughput * phase_val * mi.ad.common.mis_weight(ds.pdf, phase_pdf) * emitted
+
+        if not primal:
+            # Transmittance gradients due to the emitter sample's attenuation
+            # by the medium. We re-run transmittance estimation here as another
+            # application of path replay backpropagation.
+            # TODO: any chance to avoid the second run?
+            # TODO: should the adjoint include the phase_val, etc?
+            adjoint = δL * nee_contrib
+            self.sample_emitter(mei, scene, nee_sampler, medium, channel, active,
+                                adjoint=adjoint)
+
+        return nee_contrib
+
+
     def sample_emitter(self, ref_interaction, scene, sampler, medium, channel, active,
                        adjoint=None):
         """
@@ -381,7 +422,6 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
             ray, 0, si.t, medium, sampler, channel, active & si.is_valid(), adjoint=adjoint)
 
         return emitter_val * transmittance, ds
-
 
 
     def estimate_transmittance(self, ray_full, tmin, tmax, medium, sampler, channel, active,
@@ -455,6 +495,55 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
         return transmittance
 
 
+    def backpropagate_scattering_drt(self, scene, medium, alt_sampler, ray, si, depth,
+                                     channel, adjoint, active):
+        """
+        Estimate in-scattering gradients with Differential Delta Tracking.
+        """
+        # TODO: check if this is needed or we can use the main ray
+        sub_ray = mi.Ray3f(ray)
+        sub_ray.maxt[active] = dr.select(
+            dr.isfinite(si.t), si.t, dr.largest(mi.Float))
+        del ray
+
+        if self.use_drt_subsampling:
+            raise NotImplementedError('DRT subsampling')
+
+        # With DRT, the sampling probability is T(t').
+        mei_sub, drt_weight = medium.sample_interaction_drt(
+            sub_ray, alt_sampler, channel, active)
+        with dr.resume_grad():
+            mei_sub.sigma_s, mei_sub.sigma_n, mei_sub.sigma_t = \
+                medium.get_scattering_coefficients(mei_sub, active);
+            mei_sub.combined_extinction = medium.get_majorant(mei_sub, active);
+
+        # This should always succeed.
+        active = active & mei_sub.is_valid()
+
+        # --- Estimate incident radiance
+        # Unfortunately, this is a new free-flight distance t',
+        # different from the main path. Therefore the value Li
+        # provided by path replay is not valid. We have to
+        # estimate Li again, which is costly.
+        with dr.suspend_grad():
+            drt_Li = self.sample_recursive(
+                scene, alt_sampler, medium, sub_ray, si,
+                mei_sub, channel, depth, active)
+        # ----------
+
+        if self.use_drt_mis:
+            # Note: MIS weight hardcoded for the power heuristic
+            drt_mis_weight = 1 / (1 + dr.sqr(mei_sub.sigma_t))
+        else:
+            drt_mis_weight = 1.0
+
+        with dr.resume_grad():
+            albedo_sub = medium.get_albedo(mei_sub, active)
+            to_backward = dr.select(active, mei_sub.sigma_t * albedo_sub, 0.)
+            dr.backward_from(drt_mis_weight * drt_weight *
+                             adjoint * to_backward * drt_Li)
+
+
     def backpropagate_transmittance(self, medium, alt_sampler, si, mei, ray,
                                     adj_weight,
                                     did_scatter, did_escape, n_samples=4):
@@ -479,6 +568,106 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
         with dr.resume_grad():
             contribs = dr.select(active, contribs, 0.)
             dr.backward_from(adj_weight * contribs * inv_pdf)
+
+
+    def sample_recursive(self, scene, alt_sampler, medium, ray, si, mei, channel,
+                         depth, active):
+        """
+        Trace a detached recursive ray to estimate Li incident to the current medium
+        interaction.
+        """
+        result = dr.zeros(mi.Spectrum)
+        phase_ctx = mi.PhaseFunctionContext(alt_sampler)
+        phase = medium.phase_function()
+
+        # 1. Emitter sampling (including the MIS weight)
+        if self.use_nee:
+            result += self.sample_emitter_for_nee(
+                mei, scene, alt_sampler, medium, channel, phase_ctx,
+                phase, mi.Spectrum(1), active)
+
+        # 2. Phase sampling (including the MIS weight)
+        # Prepare recursive ray to be traced. We can assume it's leaving
+        # from a valid medium interaction.
+        # Note: we assume perfect importance sampling of the phase function.
+        wo, phase_pdf = phase.sample(
+            phase_ctx, mei,
+            alt_sampler.next_1d(active), alt_sampler.next_2d(active), active)
+        rec_ray = mei.spawn_ray(wo)
+        rec_ray = dr.select(active, rec_ray, ray)
+
+        # -- Case 2: ray escaped the medium and must cross the medium boundary
+        si_next = scene.ray_intersect(rec_ray, active)
+        # Important for homogeneous media
+        rec_ray.maxt[active] = dr.select(dr.isfinite(si_next.t),
+                                         si_next.t, dr.largest(mi.Float))
+        next_depth = dr.select(active, depth + 1, depth)
+        path_state = PathState(
+            depth=next_depth,
+            si=si_next,
+            last_scatter_direction_pdf=dr.select(active, phase_pdf, 1.0),
+            escaped=mi.Mask(False),
+            active=active & (next_depth < self.max_depth),
+        )
+        # ----------
+
+        Li, _, _ = self.sample(dr.ADMode.Primal, scene, alt_sampler, rec_ray, active=active,
+                               path_state=path_state)
+        result += Li
+
+        return result & active
+
+
+
+
+class PathState():
+    """
+    Helper structure holding path state information needed to
+    trace recursive rays.
+    """
+    def __init__(self, depth=None, si=None, last_scatter_direction_pdf=None,
+                 escaped=None, active=None, n=None):
+        # TODO: would need medium pointer as well if we didn't assume a single medium
+        if n is not None:
+            assert (depth, si, last_scatter_direction_pdf, escaped) == (None, None, None, None)
+            assert active is not None
+            self._depth = dr.full(mi.Int32, -1, n)
+            self._si = dr.zeros(mi.SurfaceInteraction3f, n)
+            self._last_scatter_direction_pdf = dr.zeros(mi.Float, n)
+            self._escaped = dr.empty(mi.Mask, n)
+            self._active = mi.Mask(active)
+        else:
+            self._depth = depth
+            self._si = si
+            self._last_scatter_direction_pdf = last_scatter_direction_pdf
+            self._escaped = escaped
+            self._active = active
+
+    def loop_put(self, loop):
+        loop.put(lambda: (self._depth, self._si, self._last_scatter_direction_pdf,
+                          self._escaped, self._active))
+
+    def set(self, state: dict, enabled):
+        self._depth[enabled] = state['depth']
+        self._si[enabled] = state['si']
+        self._last_scatter_direction_pdf[enabled] = state['last_scatter_direction_pdf']
+        self._escaped[enabled] = state['escaped']
+        self._active[enabled] = state['active']
+
+    def is_valid(self):
+        return dr.neq(self._depth, -1)
+
+    def depth(self):
+        return mi.Int32(self._depth)
+    def si(self):
+        return mi.SurfaceInteraction3f(self._si)
+    def last_scatter_direction_pdf(self):
+        return mi.Float(self._last_scatter_direction_pdf)
+    def active(self):
+        return mi.Mask(self._active)
+    def escaped(self):
+        return mi.Mask(self._escaped)
+
 
 
 mi.register_integrator("volpathsimple", lambda props: VolpathSimpleIntegrator(props))

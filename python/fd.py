@@ -7,9 +7,8 @@ from tqdm import tqdm
 
 
 def fd_gradients(output_dir, scene, params, loss_fn, eps,
-                 spp=4096, write_images=False, integrator=None):
+                 spp=4096, write_images=False, integrator=None, seed = 1234):
     param_names = list(params.keys())
-    seed = 1234
     im_center = mi.render(scene, spp=spp, seed=seed, integrator=integrator)
     loss_center = loss_fn(im_center)
     if write_images:

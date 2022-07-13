@@ -271,9 +271,13 @@ def test_04_volpathsimple_correctness():
         'max_depth': 64,
         'rr_depth': 999,
         # TODO: test both
-        'use_drt': False,
+        'use_drt': True,
         # TODO: test both
-        'use_nee': True,
+        'use_drt_subsampling': False,
+        # TODO: test both
+        'use_drt_mis': False,
+        # TODO: test both
+        'use_nee': False,
     })
     seed = 12345
 
@@ -282,6 +286,8 @@ def test_04_volpathsimple_correctness():
         suffix += '_nee'
     if integrator.use_drt:
         suffix += '_drt'
+        if not integrator.use_drt_subsampling:
+            suffix += '_quadratic'
 
     output_dir = join(OUTPUT_DIR, 'test_integrators', f'test_volpathsimple_correctness{suffix}')
     os.makedirs(output_dir, exist_ok=True)
