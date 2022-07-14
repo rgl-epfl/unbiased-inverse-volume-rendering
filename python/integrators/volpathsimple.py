@@ -55,6 +55,7 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
         medium = self.get_single_medium(scene)
         channel = 0
 
+        # --- Recursive calls to `sample`: restore state
         if path_state is not None:
             # Recursive ray (detached, e.g. for DRT)
             assert primal, 'Cannot trace attached recursive rays'
@@ -70,6 +71,7 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
             si, escaped = self.reach_medium(scene, ray, active)
         # Note: at this point, `active` only includes lanes that do need to traverse the medium.
 
+        # --- Prepare next event estimation
         if self.use_nee:
             # If `path_state` is given, we kind of assume that `all(active & escaped) == False``,
             # i.e. that a recursive ray is not going to be started for
@@ -86,6 +88,11 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
         else:
             has_scattered = last_scatter_it = last_scatter_direction_pdf = None
 
+        # --- Prepare DRT subsampling
+        drt_reservoir = None
+        if self.use_drt and self.use_drt_subsampling:
+            drt_reservoir = DRTReservoir(n=1, active=active)
+
         alt_sampler = None
         alt_seed_rnd = sampler.next_1d(active)
         if not primal:
@@ -100,7 +107,7 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
 
         loop = mi.Loop("VolpathSimpleSampleLoop", lambda: (
             active, escaped, depth, ray, throughput, si, result, sampler, alt_sampler,
-            has_scattered, last_scatter_it, last_scatter_direction_pdf))
+            has_scattered, last_scatter_it, last_scatter_direction_pdf, drt_reservoir))
 
         while loop(active):
 
@@ -136,8 +143,8 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
                     # will not be included in `drt_Li`.
                     adjoint = (δL * throughput)
                     self.backpropagate_scattering_drt(
-                        scene, medium, alt_sampler, ray, si, depth, channel,
-                        adjoint, active)
+                        scene, medium, alt_sampler, ray, si, throughput, depth,
+                        channel, adjoint, active, drt_reservoir=drt_reservoir)
                     del adjoint
 
                 if (not self.use_drt) or self.use_drt_mis:
@@ -195,9 +202,10 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
             phase = mei.medium.phase_function()
             phase[~did_scatter] = dr.zeros(mi.PhaseFunctionPtr, 1)
             if self.use_nee:
+                active_e = did_scatter & active
                 nee_contrib = self.sample_emitter_for_nee(
                     mei, scene, sampler, medium, channel, phase_ctx, phase, throughput,
-                    active & did_scatter, primal=primal, δL=δL)
+                    active_e, primal=primal, δL=δL)
                 if primal:
                     result[active_e] += nee_contrib
                 else:
@@ -234,6 +242,20 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
             ray[did_escape] = si.spawn_ray(ray.d)  # Continue on the other side of the boundary
             escaped |= did_escape
             # ----------
+
+        # --- Finalize DRT subsampling
+        if (not primal) and self.use_drt and self.use_drt_subsampling:
+            drt_state, subsampling_weight = drt_reservoir.get()
+            # Note: the subsampling weight omits a `throughput` term,
+            # because it cancels out with the `throughput` factor
+            # normally included in `adjoint`.
+            # TODO: check this
+            adjoint = subsampling_weight * δL
+            self.backpropagate_scattering_drt(
+                scene, medium, alt_sampler, drt_state.ray(), drt_state.si(),
+                None, drt_state.depth(), channel,
+                adjoint, drt_state.active(), drt_reservoir=None)
+
 
         # --- Envmap contribution
         if primal:
@@ -495,19 +517,46 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
         return transmittance
 
 
-    def backpropagate_scattering_drt(self, scene, medium, alt_sampler, ray, si, depth,
-                                     channel, adjoint, active):
+    def backpropagate_scattering_drt(self, scene, medium, alt_sampler, ray, si,
+                                     throughput, depth, channel,
+                                     adjoint, active, drt_reservoir=None):
         """
         Estimate in-scattering gradients with Differential Delta Tracking.
         """
+
+        # --- DRT subsampling: at each bounce, instead of applying
+        # differential ratio tracking, simply update a reservoir to
+        # pick *one* path depth (can be different for each lane) at
+        # which to trigger DRT. This function will be called again
+        # once all bounces have been simulated, # this time with
+        # arguments taken from the DRT reservoir.
+        if drt_reservoir is not None:
+            assert self.use_drt_subsampling
+            state_for_delayed = {
+                'depth': depth,
+                'si': si,
+                'escaped': mi.Mask(False),
+                'active': active,
+                'ray': ray,
+                # This won't be used, we'll have a PDF when picking
+                # our own recursive ray direction later.
+                'last_scatter_direction_pdf': dr.zeros(mi.Float),
+            }
+
+            # TODO: consider using the MIS weight as part of the depth sampling weight
+            drt_reservoir.update(state=state_for_delayed, weight=throughput,
+                                 sample=alt_sampler.next_1d(active), active=active)
+            # No backpropagation at this point, we'll trace all recursive rays
+            # at once when all paths have completed.
+            return
+        # ----------
+
         # TODO: check if this is needed or we can use the main ray
         sub_ray = mi.Ray3f(ray)
         sub_ray.maxt[active] = dr.select(
             dr.isfinite(si.t), si.t, dr.largest(mi.Float))
         del ray
 
-        if self.use_drt_subsampling:
-            raise NotImplementedError('DRT subsampling')
 
         # With DRT, the sampling probability is T(t').
         mei_sub, drt_weight = medium.sample_interaction_drt(
@@ -667,6 +716,65 @@ class PathState():
         return mi.Mask(self._active)
     def escaped(self):
         return mi.Mask(self._escaped)
+
+
+
+class DRTPathState(PathState):
+    def __init__(self, n=None, ray=None, **kwargs):
+        super().__init__(n=n, **kwargs)
+        if ray is None:
+            self._ray = dr.zeros(mi.Ray3f, n)
+        else:
+            self._ray = ray
+
+    def loop_put(self, loop):
+        super().loop_put(loop)
+        loop.put(lambda: (self._ray,))
+
+    def set(self, state: dict, enabled):
+        super().set(state, enabled)
+        self._ray[enabled] = state['ray']
+
+    def ray(self):
+        return type(self._ray)(self._ray)
+
+
+class DRTReservoir():
+    """
+    Helper class to sample one (or more) depth values along a path
+    with Reservoir sampling.
+    """
+    def __init__(self, n, active):
+        assert n == 1, 'Not supported yet: reservoir with size > 1'
+
+        self.n = n
+        self.state = DRTPathState(n=n, active=active)
+        # Sum of weights seen
+        self.wsum = dr.zeros(mi.Spectrum, dr.width(active))
+        # Weight of the sample currently in the reservoir
+        self.current_weight = dr.zeros(mi.Spectrum, dr.width(active))
+
+    def update(self, state: dict, weight, sample, active):
+        assert isinstance(weight, (mi.Spectrum, dr.detached_t(mi.Spectrum))), type(weight)
+
+        weight = dr.select(active, dr.detach(weight), 0)
+        self.wsum[active] = self.wsum + weight
+
+        change = active & (sample <= dr.mean(weight / self.wsum))
+        self.current_weight[change] = weight
+        self.state.set(state, change)
+
+
+    def get(self):
+        d = dr.mean(self.current_weight)
+        sampling_weight = dr.select(
+            dr.neq(d, 0), dr.mean(self.wsum) * self.current_weight / d, 0)
+        return self.state, sampling_weight
+
+
+    def loop_put(self, loop):
+        self.state.loop_put(loop)
+        loop.put(lambda: (self.wsum, self.current_weight))
 
 
 

@@ -266,18 +266,13 @@ def test_04_volpathsimple_correctness():
     scene = mi.load_dict(scene_dict)
     integrator = mi.load_dict({
         'type': 'volpathsimple',
-        # TODO
-        # 'max_depth': 1,
         'max_depth': 64,
         'rr_depth': 999,
-        # TODO: test both
+        # TODO: all combinations of the following
+        'use_nee': True,
         'use_drt': True,
-        # TODO: test both
-        'use_drt_subsampling': False,
-        # TODO: test both
+        'use_drt_subsampling': True,
         'use_drt_mis': False,
-        # TODO: test both
-        'use_nee': False,
     })
     seed = 12345
 
@@ -288,6 +283,8 @@ def test_04_volpathsimple_correctness():
         suffix += '_drt'
         if not integrator.use_drt_subsampling:
             suffix += '_quadratic'
+        if integrator.use_drt_mis:
+            suffix += '_mis'
 
     output_dir = join(OUTPUT_DIR, 'test_integrators', f'test_volpathsimple_correctness{suffix}')
     os.makedirs(output_dir, exist_ok=True)
