@@ -102,3 +102,51 @@ def get_int_config(name):
         return deepcopy(name)
     return deepcopy(_INTEGRATOR_CONFIGS[name])
 
+
+add_int_config(
+    'fd-forward',
+    pretty_name='Finite differences',
+    params={
+        'type': 'volpathsimple',
+        'use_drt': False,
+    },
+    uses_fd=True,
+    fd_epsilon=5e-3,
+)
+add_int_config(
+    'volpathsimple-drt',
+    pretty_name='Differential Ratio Tracking',
+    params={
+        'type': 'volpathsimple',
+        'use_drt': True,
+        'use_drt_subsampling': True,
+        'use_drt_mis': True,
+    },
+)
+add_int_config(
+    'volpathsimple-drt-quadratic',
+    pretty_name='Differential Ratio Tracking (quadratic)',
+    params={
+        'type': 'volpathsimple',
+        'use_drt': True,
+        'use_drt_subsampling': False,
+        'use_drt_mis': True,
+    },
+)
+add_int_config(
+    'volpathsimple-basic',
+    pretty_name='Free-flight based',
+    params={
+        'type': 'volpathsimple',
+        'use_drt': False,
+    },
+)
+
+add_int_config(
+    'nerf',
+    pretty_name='NeRF (grid-backed)',
+    params={
+        'type': 'nerf',
+        'queries_per_ray': 128,
+    },
+)
