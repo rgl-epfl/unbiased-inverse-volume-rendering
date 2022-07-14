@@ -18,14 +18,14 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
         super().__init__(props=props)
 
         self.hide_emitters = props.get('hide_emitters', False)
+        # Next event estimation: sample emitters at each volume interaction
+        self.use_nee = props.get('use_nee', True)
         # Enable the DRT sampling strategy for in-scattering gradients.
         self.use_drt = props.get('use_drt', True)
         # Use the DRT sampling strategy only once per path.
         # If disabled, the cost of the adjoint will grow quadratically with
         # the path length due to the need to trace a recursive path.
         self.use_drt_subsampling = props.get('use_drt_subsampling', True)
-        # Next event estimation: sample emitters at each volume interaction
-        self.use_nee = props.get('use_nee', True)
         # In the adjoint, use MIS to combine the specialized transmittance-only
         # sampling technique (DRT) with the standard extinction-weighted transmittance
         # sampling technique.

@@ -50,3 +50,22 @@ def gallery(array, ncols=3):
               .swapaxes(1, 2)
               .reshape(height*nrows, width*ncols, intensity))
     return result
+
+
+def save_params(output_dir, scene_config, params, name):
+    for key in scene_config.param_keys:
+        value = params[key]
+        if not key.endswith('.data'):
+            # TODO: support saving scalar parameters
+            raise NotImplementedError(f'Checkpointing of parameter {key} with type {type(value)}')
+
+        # Heuristic to get the variable name from a parameter key.
+        for suffix in ['.data', '.values', '.value']:
+            if key.endswith(suffix):
+                key = key[:-len(suffix)]
+        var_name = '_'.join(key.strip().split('.'))
+
+        fname = os.path.join(output_dir, f'{name}-{var_name}.vol')
+        # TODO: check this doesn't mix-up the dimensions (data ordering)
+        grid = mi.VolumeGrid(value.numpy())
+        grid.write(fname)
