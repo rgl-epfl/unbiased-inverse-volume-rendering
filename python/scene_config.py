@@ -59,3 +59,31 @@ def get_scene_config(name):
     if isinstance(name, SceneConfig):
         return deepcopy(name)
     return deepcopy(_SCENE_CONFIGS[name])
+
+
+add_scene_config(
+    'janga-smoke',
+    fname='janga-smoke/janga-smoke.xml',
+    param_keys=['medium1.sigma_t.data', 'medium1.albedo.data', 'medium1.emission.data'],
+    normal_scene_vars={
+        'resx': 720,
+        'resy': 620,
+        'envmap_filename': 'textures/gamrig_2k.hdr',
+        'majorant_resolution_factor': 8,
+    },
+    ref_scene_vars={
+        'resx': 720,
+        'resy': 620,
+        'medium_filename': 'volumes/janga-smoke-264-136-136.vol',
+        'albedo_filename': 'volumes/albedo-noise-256-128-128.vol',
+        'emission_filename': 'volumes/albedo-noise-256-128-128.vol',
+        'envmap_filename': 'textures/gamrig_2k.hdr',
+        'majorant_resolution_factor': 8,
+    },
+    sensors=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,54,55,56,57,58,59,60,61,62,63,],max_depth=64,
+    start_from_value={
+        'medium1.sigma_t.data': 0.04 / 20,
+        'medium1.albedo.data': 0.6,
+        'medium1.emission.data': 0.1 / 20,
+    },
+)
