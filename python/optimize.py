@@ -1,6 +1,4 @@
-
 from dataclasses import fields
-from multiprocessing.sharedctypes import Value
 import os
 from os.path import join
 from copy import deepcopy
@@ -9,9 +7,7 @@ import drjit as dr
 import mitsuba as mi
 from tqdm import tqdm
 
-from constants import OUTPUT_DIR
-from scene_config import get_scene_config
-from util import save_params
+from util import save_params, get_single_medium
 
 
 def load_scene(scene_config, reference=False, **kwargs):
@@ -102,12 +98,31 @@ def render_previews(output_dir, opt_config, scene_config, scene, integrator, it_
 def initialize_scene(opt_config, scene_config, scene):
     params = mi.traverse(scene)
     params.keep(scene_config.param_keys)
-    # TODO: downsample params to their initial resolution
 
     # Set params to their initial values
     for k, v in scene_config.start_from_value.items():
         assert k in params
-        params[k] = type(params[k])(v, shape=dr.shape(params[k]))
+
+        # --- Upsampling support
+        # If parameter resolutions will be upsampled during the optimization,
+        # figure out the initial resolution that will lead to the correct
+        # final resolution after n upsampling steps.
+        shape = dr.shape(params[k])
+        if opt_config.upsample:
+            assert len(shape) == 4
+            upsample_res_factor = 2 ** len(opt_config.upsample)
+            # Preserve channel count
+            init_res = (*[max(1, s // upsample_res_factor) for s in shape[:3]], shape[-1])
+            if 1 in init_res[:3]:
+                raise ValueError(f'Initial resolution not supported: {init_res}. Maybe reduce upsample_steps?')
+
+            if '.sigma_t.' in k:
+                adjust_majorant_res_factor(scene_config, scene, init_res)
+        else:
+            init_res = shape
+
+        params[k] = type(params[k])(v, shape=init_res)
+
     params.update()
     return params
 
@@ -123,6 +138,52 @@ def enforce_valid_params(scene_config, opt):
             opt[k] = dr.clip(v, 0, 1)
         else:
             raise ValueError
+
+
+def adjust_majorant_res_factor(scene_config, scene, density_res):
+    res_factor = scene_config.majorant_resolution_factor
+    if res_factor <= 1:
+        return
+
+    min_side = dr.min(density_res[:3])
+    # For the current density res, find the largest factor that
+    # results in a meaningful supergrid resolution.
+    while (res_factor > 1) and (min_side // res_factor) < 4:
+        res_factor -= 1
+    # Otherwise, just disable the supergrid.
+    if res_factor <= 1:
+        res_factor = 0
+
+    medium = get_single_medium(scene)
+    current = medium.majorant_resolution_factor()
+    if current != res_factor:
+        medium.set_majorant_resolution_factor(res_factor)
+        print(f'[i] Updated majorant supergrid resolution factor: {current} → {res_factor}')
+
+
+def upsample_params_if_needed(opt_config, scene_config, scene, params, opt, it_i):
+    if not opt_config.should_upsample(it_i):
+        return False
+
+    majorant_res_factor = scene_config.majorant_resolution_factor
+
+    for k in scene_config.param_keys:
+        # TODO: double-check this is all working correctly
+        v = opt[k]
+        old_res = dr.shape(v)
+        assert len(old_res) == 4
+        new_res = (*[2 * r for r in old_res[:3]], old_res[-1])
+        opt[k] = dr.upsample(v, shape=new_res)
+        assert dr.shape(opt[k]) == new_res
+        print(f'[i] Upsampled parameter "{k}" at iteration {it_i}: {old_res} → {new_res}')
+
+        if '.sigma_t.' in k:
+            adjust_majorant_res_factor(scene_config, scene, new_res)
+
+    medium = get_single_medium(scene)
+    medium.set_majorant_resolution_factor(majorant_res_factor)
+    params.update(opt)
+    return True
 
 
 def create_checkpoint(output_dir, opt_config, scene_config, params, name_or_it):
@@ -155,6 +216,9 @@ def run_optimization(output_dir, opt_config, scene_config, int_config):
     for f in fields(opt_config):
         print(f'        {f.name}: {opt_config.__dict__[f.name]}')
 
+    # TODO: support batched rendering
+    if opt_config.batch_size is not None:
+        raise NotImplementedError('Batched rendering')
 
     ref_paths = get_reference_image_paths(scene_config)
     ref_images = load_reference_images(ref_paths)
@@ -183,14 +247,10 @@ def run_optimization(output_dir, opt_config, scene_config, int_config):
     for it_i in tqdm(range(opt_config.n_iter), desc='Optimization'):
         seed, _ = mi.sample_tea_32(2 * it_i + 0, opt_config.base_seed)
         seed_grad, _ = mi.sample_tea_32(2 * it_i + 1, opt_config.base_seed)
-        # TODO: LR schedule
-
-        # TODO: support batched rendering
-        if opt_config.batch_size is not None:
-            raise NotImplementedError('Batched rendering')
+        opt.set_learning_rate(opt_config.learning_rates(scene_config, it_i))
+        upsample_params_if_needed(opt_config, scene_config, scene, params, opt, it_i)
 
         sensor_i = scene_config.sensors[int(sampler.next_float32() * n_sensors)]
-        # TODO: upsampling of params
 
         image = mi.render(scene, params=params, integrator=integrator, sensor=sensor_i,
                           spp=spp_primal, spp_grad=spp_grad,

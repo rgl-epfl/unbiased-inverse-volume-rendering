@@ -4,6 +4,8 @@ import struct
 import drjit as dr
 import mitsuba as mi
 
+from util import get_single_medium
+
 
 class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
     """Simplified volumetric path tracer with support for Differential Delta Tracking.
@@ -52,7 +54,7 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
         wavefront_size = dr.width(ray.d)
         result = mi.Spectrum(0. if primal else state_in)
         throughput = mi.Spectrum(1.0)
-        medium = self.get_single_medium(scene)
+        medium = get_single_medium(scene)
         channel = 0
 
         # --- Recursive calls to `sample`: restore state
@@ -286,21 +288,6 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
 
 
         return result, active, result
-
-
-    def get_single_medium(self, scene):
-        """
-        Since we only support a very restricted setup (single medium within a single
-        bounding shape), we can extract the only medium pointer within the scene
-        and use is for all subsequent method calls. This avoids expensive virtual
-        function calls on array pointers.
-        """
-        shapes = scene.shapes()
-        assert len(shapes) == 1, f'Not supported: more than 1 shape in the scene (found {len(shapes)}).'
-        medium = shapes[0].interior_medium()
-        assert medium is not None, 'Expected a single shape with an interior medium.'
-        return medium
-
 
     def reach_medium(self, scene, ray, active):
         """

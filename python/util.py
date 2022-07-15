@@ -69,3 +69,18 @@ def save_params(output_dir, scene_config, params, name):
         # TODO: check this doesn't mix-up the dimensions (data ordering)
         grid = mi.VolumeGrid(value.numpy())
         grid.write(fname)
+
+
+
+def get_single_medium(scene):
+    """
+    Since we only support a very restricted setup (single medium within a single
+    bounding shape), we can extract the only medium pointer within the scene
+    and use is for all subsequent method calls. This avoids expensive virtual
+    function calls on array pointers.
+    """
+    shapes = scene.shapes()
+    assert len(shapes) == 1, f'Not supported: more than 1 shape in the scene (found {len(shapes)}).'
+    medium = shapes[0].interior_medium()
+    assert medium is not None, 'Expected a single shape with an interior medium.'
+    return medium

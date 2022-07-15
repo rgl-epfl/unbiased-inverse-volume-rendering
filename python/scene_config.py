@@ -26,7 +26,13 @@ class SceneConfig():
     # Upper bound on the density, this prevents very large render times.
     # Its value should be chosen based on the scene scale.
     max_density: float = 250
+    # Determines the resolution of the majorant supergrid.
+    # Will be adjusted at runtime if upsampling is enabled.
+    # The supergrid can be disabled by setting the factor to 0.
+    majorant_resolution_factor: int = 8
 
+    # Per-parameter factors to apply to the learning rate
+    param_lr_factors: Dict = None
 
     def __post_init__(self):
         super().__init__()
@@ -48,6 +54,12 @@ class SceneConfig():
 
         if not self.preview_sensors:
             self.preview_sensors = [self.sensors[i] for i in range(min(5, len(self.sensors)))]
+
+        if not self.param_lr_factors:
+            self.param_lr_factors = {}
+            for k in self.param_keys:
+                if '.albedo.' in k:
+                    self.param_lr_factors[k] = 2.0
 
 
 _SCENE_CONFIGS = {}

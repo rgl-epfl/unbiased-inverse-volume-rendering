@@ -1,5 +1,6 @@
 from copy import deepcopy
 from dataclasses import dataclass
+from enum import IntEnum
 from typing import Callable, List, Dict
 
 import mitsuba as mi
@@ -30,7 +31,6 @@ class OptimizationConfig():
     checkpoint_final: bool = True
     checkpoint_stride: int = 1000
 
-
     preview_spp: int = None
     opt_type: Callable = 'adam'
     opt_args: Dict = None
@@ -38,30 +38,46 @@ class OptimizationConfig():
 
     def __post_init__(self):
         if self.upsample:
-            self.upsample_at = {}
+            self.upsample_at = set()
             for t in self.upsample:
                 assert t >= 0 and t <= 1
                 self.upsample_at.add(int(t * self.n_iter))
-            print('Upsampling schedule:', self.upsample_at)
 
     def optimizer(self, params):
         opt_type = {'sgd': mi.ad.SGD, 'adam': mi.ad.Adam}[self.opt_type]
         return opt_type(lr=self.lr, params=params, **(self.opt_args or {}))
 
-    def learning_rate(self, it_i):
-        if self.lr_schedule is None:
-            return self.lr
+    def learning_rates(self, scene_config, it_i):
+        schedule_factor = 1.0
+        if self.lr_schedule not in (None, Schedule.Constant):
+            t = it_i / (self.n_iter - 1)
+            if self.lr_schedule == Schedule.Last25:
+                steps = [0.75, 0.85, 0.95]
+            else:
+                raise ValueError(f'Unsupported schedule: {self.lr_schedule}')
+            for s in steps:
+                if t >= s:
+                    schedule_factor *= 0.5
 
-        t = it_i / (self.n_iter - 1)
-        # TODO: compute LR according to schedule
-        raise NotImplementedError('LR schedule')
+        # TODO: if using SGD, multiply LRs after an upsampling event
+        upsampling_factor = 1.0
+
+        return {
+            k: (schedule_factor * upsampling_factor
+                * scene_config.param_lr_factors.get(k, 1.0) * self.lr)
+            for k in scene_config.param_keys
+        }
 
 
     def should_upsample(self, it_i):
-        if not self.upsampling_schedule:
+        if not self.upsample_at:
             return False
         return it_i in self.upsample_at
 
+
+class Schedule(IntEnum):
+    Constant = 0
+    Last25 = 1
 
 
 @dataclass

@@ -16,7 +16,7 @@ import mitsuba as mi
 from tqdm import tqdm
 
 from constants import OUTPUT_DIR
-from opt_config import get_int_config, OptimizationConfig
+from opt_config import get_int_config, OptimizationConfig, Schedule
 from optimize import run_optimization
 from scene_config import get_scene_config
 
@@ -36,7 +36,12 @@ def reproduce_optimization_experiments(configs, overwrite=False):
             output_dir = join(exp_output_dir, int_name)
             os.makedirs(output_dir, exist_ok=True)
 
-            run_optimization(output_dir, opt_config, scene_config, int_config)
+            result_fname = join(output_dir, 'params', 'final-medium1_sigma_t.vol')
+            grid = mi.VolumeGrid(result_fname)
+            print(result_fname, grid)
+
+            if overwrite or not os.path.isfile(result_fname):
+                run_optimization(output_dir, opt_config, scene_config, int_config)
 
 
 def main():
@@ -45,6 +50,7 @@ def main():
         'spp': 16,
         'primal_spp_factor': 64,
         'lr': 5e-3,
+        'lr_schedule': Schedule.Last25,
         'batch_size': None,
         'render_initial': True,
         'render_final': True,
