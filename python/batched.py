@@ -75,8 +75,9 @@ class _BatchedRenderOp(dr.CustomOp):
         )
         # TODO: support ray_weight != 1
 
+        image_grad_in = self.grad_out()[0]
         render_batch_backward(self.integrator, self.film, self.sampler, self.scene,
-                              self.params, self.grad_out(), rays,
+                              self.params, image_grad_in, rays,
                               seed=self.seed[1], spp=self.spp[1],
                               pixel_format=self.pixel_format)
 
@@ -219,7 +220,7 @@ def render_batch_backward(integrator: mi.SamplingIntegrator,
 
     aovs = integrator.aovs()
 
-    # Disable derivatives in all of the following
+    # Disable derivatives in all of the following, except where explicitly re-enabled
     with dr.suspend_grad():
         # Prepare the film and sample generator for rendering
         film, sampler, spp = prepare_batch(rays, seed, spp, aovs,
@@ -242,29 +243,33 @@ def render_batch_backward(integrator: mi.SamplingIntegrator,
 
         # Assume that rays were perfectly sampled.
         ray_weight = 1.0
+        det = 1.0
         pos = 0.5 + mi.Float(dr.arange(mi.UInt32, dr.width(rays)) // spp)
 
+        # (1) Primal rendering (detached)
+        L, valid, state_out = integrator.sample(
+            mode=dr.ADMode.Primal,
+            scene=scene,
+            sampler=sampler.clone(),
+            ray=rays,
+            δL=None,
+            state_in=None,
+            active=mi.Bool(True),
+            reparam=None,
+        )
+
+        # Prepare an ImageBlock as specified by the film
+        block = film.create_block()
+
+        # Only use the coalescing feature when rendering enough samples
+        block.set_coalesce(block.coalesce() and spp >= 4)
+
         with dr.resume_grad():
-            L, valid, _ = integrator.sample(
-                mode=dr.ADMode.Backward,
-                scene=scene,
-                sampler=sampler,
-                ray=rays,
-                δL=δL,
-                state_in=state_out,
-                active=mi.Bool(True)
-                reparam=reparam,
-            )
-
-            # Prepare an ImageBlock as specified by the film
-            block = film.create_block()
-
-            # Only use the coalescing feature when rendering enough samples
-            block.set_coalesce(block.coalesce() and spp >= 4)
+            dr.enable_grad(L)
 
             # Accumulate into the image block
             if mi.has_flag(film.flags(), mi.FilmFlags.Special):
-                aovs = film.prepare_sample(L * ray_weight * det, ray.wavelengths,
+                aovs = film.prepare_sample(L * ray_weight * det, rays.wavelengths,
                                            block.channel_count(),
                                            weight=det,
                                            alpha=dr.select(valid, mi.Float(1), mi.Float(0)))
@@ -273,7 +278,7 @@ def render_batch_backward(integrator: mi.SamplingIntegrator,
             else:
                 block.put(
                     pos=pos,
-                    wavelengths=ray.wavelengths,
+                    wavelengths=rays.wavelengths,
                     value=L * ray_weight * det,
                     weight=det,
                     alpha=dr.select(valid, mi.Float(1), mi.Float(0))
@@ -285,7 +290,7 @@ def render_batch_backward(integrator: mi.SamplingIntegrator,
             gc.collect()
 
             # This step launches a kernel
-            dr.schedule(block.tensor())
+            dr.schedule(state_out, block.tensor())
             image = film.develop()
 
             # Differentiate sample splatting and weight division steps to
@@ -293,9 +298,23 @@ def render_batch_backward(integrator: mi.SamplingIntegrator,
             dr.set_grad(image, grad_in)
             dr.enqueue(dr.ADMode.Backward, image)
             dr.traverse(mi.Float, dr.ADMode.Backward)
+            δL = dr.grad(L)
+
+        # (2) Launch Monte Carlo sampling in backward AD mode
+        L_2, valid_2, state_out_2 = integrator.sample(
+            mode=dr.ADMode.Backward,
+            scene=scene,
+            sampler=sampler,
+            ray=rays,
+            δL=δL,
+            state_in=state_out,
+            active=mi.Bool(True),
+            reparam=reparam,
+        )
 
         # We don't need any of the outputs here
-        del ray, weight, pos, block, sampler
+        del L_2, valid_2, state_out, state_out_2, δL, \
+            rays, ray_weight, pos, block, sampler
         gc.collect()
 
         # Run kernel representing side effects of the above
@@ -334,8 +353,8 @@ def prepare_batch(rays: mi.RayDifferential3f,
             'rfilter': {'type': 'box'},
         })
     else:
-        assert film.crop_size() == (wavefront_size, 1)
-        assert film.channel_count() == n_channels
+        # Ideally we would also check for the channel count and pixel format
+        assert dr.all(film.crop_size() == mi.ScalarVector2u(wavefront_size // spp, 1))
         assert film.rfilter().is_box_filter()
         assert not film.sample_border()
     del pixel_format
