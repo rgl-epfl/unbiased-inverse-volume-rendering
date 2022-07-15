@@ -37,9 +37,6 @@ def reproduce_optimization_experiments(configs, overwrite=False):
             os.makedirs(output_dir, exist_ok=True)
 
             result_fname = join(output_dir, 'params', 'final-medium1_sigma_t.vol')
-            grid = mi.VolumeGrid(result_fname)
-            print(result_fname, grid)
-
             if overwrite or not os.path.isfile(result_fname):
                 run_optimization(output_dir, opt_config, scene_config, int_config)
 

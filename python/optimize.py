@@ -7,6 +7,7 @@ import drjit as dr
 import mitsuba as mi
 from tqdm import tqdm
 
+from batched import render_batch
 from util import save_params, get_single_medium
 
 
@@ -67,11 +68,40 @@ def get_reference_image_paths(scene_config, overwrite=False):
     return paths
 
 
-def load_reference_images(paths):
-    return {
-        s: mi.TensorXf(mi.Bitmap(f))
-        for s, f in paths.items()
-    }
+def load_reference_images(paths, batchify=False):
+    if batchify:
+        import numpy as np
+        # Note: we rely on `paths` being ordered consistently.
+        batched = np.concatenate([
+            np.array(mi.Bitmap(f))[None, ...]
+            for _, f in paths.items()
+        ], axis=0)
+        return mi.TensorXf(batched)
+    else:
+        return {
+            s: mi.TensorXf(mi.Bitmap(f))
+            for s, f in paths.items()
+        }
+
+
+def gather_ref_values(ref_images, sensor_idx, pixel_idx):
+    # Shape: image_idx * height * width * channels
+    sh = dr.shape(ref_images)
+    assert len(sh) == 4
+    channels = sh[-1]
+    assert channels in (3, 4)
+    sh = sh[:3]
+    indices = (
+        sensor_idx * dr.prod(sh[1:])
+        + pixel_idx.y * dr.prod(sh[2:])
+        + pixel_idx.x * dr.prod(sh[3:])
+    )
+    color_type = mi.Vector3f if channels == 3 else mi.Vector4f
+
+    values = dr.gather(color_type, ref_images.array, indices)
+
+    # Shape: height * batch_size * channels
+    return mi.TensorXf(dr.ravel(values), shape=(1, dr.width(pixel_idx), channels))
 
 
 def render_previews(output_dir, opt_config, scene_config, scene, integrator, it_i):
@@ -216,12 +246,10 @@ def run_optimization(output_dir, opt_config, scene_config, int_config):
     for f in fields(opt_config):
         print(f'        {f.name}: {opt_config.__dict__[f.name]}')
 
-    # TODO: support batched rendering
-    if opt_config.batch_size is not None:
-        raise NotImplementedError('Batched rendering')
 
+    batch_size = opt_config.batch_size
     ref_paths = get_reference_image_paths(scene_config)
-    ref_images = load_reference_images(ref_paths)
+    ref_images = load_reference_images(ref_paths, batchify=(batch_size is not None))
     scene = load_scene(scene_config, reference=False)
     integrator = int_config.create(max_depth=scene_config.max_depth)
     sampler = mi.scalar_rgb.PCG32(initstate=93483)
@@ -229,6 +257,20 @@ def run_optimization(output_dir, opt_config, scene_config, int_config):
     n_sensors = len(scene_config.sensors)
     spp_grad = opt_config.spp
     spp_primal = spp_grad * opt_config.primal_spp_factor
+
+    if batch_size is not None:
+        sensors_dr = dr.gather(mi.SensorPtr, scene.sensors_dr(),
+                               mi.UInt32(scene_config.sensors))
+        # Assume that all sensors have the same dimensions
+        first_film = scene.sensors()[scene_config.sensors[0]].film()
+        film_size = first_film.crop_size()
+        pixel_format = (
+            mi.Bitmap.PixelFormat.RGBA if mi.has_flag(first_film.flags(), mi.FilmFlags.Alpha)
+            else mi.Bitmap.PixelFormat.RGB
+        )
+        batch_film = None
+        batch_render_sampler = None
+        del first_film
 
     # --- Initialization
     params = initialize_scene(opt_config, scene_config, scene)
@@ -244,18 +286,31 @@ def run_optimization(output_dir, opt_config, scene_config, int_config):
         mi.Bitmap(ref_images[s]).write(fname)
 
     # --- Main optimization loop
-    for it_i in tqdm(range(opt_config.n_iter), desc='Optimization'):
+    for it_i in tqdm(range(opt_config.n_iter), desc='Optimization',
+                     dynamic_ncols=True):
         seed, _ = mi.sample_tea_32(2 * it_i + 0, opt_config.base_seed)
         seed_grad, _ = mi.sample_tea_32(2 * it_i + 1, opt_config.base_seed)
         opt.set_learning_rate(opt_config.learning_rates(scene_config, it_i))
         upsample_params_if_needed(opt_config, scene_config, scene, params, opt, it_i)
 
-        sensor_i = scene_config.sensors[int(sampler.next_float32() * n_sensors)]
-
-        image = mi.render(scene, params=params, integrator=integrator, sensor=sensor_i,
-                          spp=spp_primal, spp_grad=spp_grad,
-                          seed=seed, seed_grad=seed_grad)
-        loss_value = opt_config.loss(image, ref_images[sensor_i])
+        if batch_size is not None:
+            # --- Batched rendering
+            image, batch_film, batch_render_sampler, sensor_idx, pixel_idx = render_batch(
+                batch_size, scene, sensors_dr, film_size,
+                params=params, integrator=integrator, film=batch_film,
+                pixel_format=pixel_format, sampler=batch_render_sampler,
+                spp=spp_primal, spp_grad=spp_grad,
+                seed=seed, seed_grad=seed_grad
+            )
+            ref_values = gather_ref_values(ref_images, sensor_idx, pixel_idx)
+        else:
+            # --- Sensor-based rendering
+            sensor_i = scene_config.sensors[int(sampler.next_float32() * n_sensors)]
+            image = mi.render(scene, params=params, integrator=integrator, sensor=sensor_i,
+                              spp=spp_primal, spp_grad=spp_grad,
+                              seed=seed, seed_grad=seed_grad)
+            ref_values = ref_images[sensor_i]
+        loss_value = opt_config.loss(image, ref_values)
         dr.backward(loss_value)
 
         opt.step()
