@@ -132,6 +132,9 @@ def initialize_scene(opt_config, scene_config, scene):
     # Set params to their initial values
     for k, v in scene_config.start_from_value.items():
         assert k in params
+        if v is None:
+            assert not opt_config.upsample
+            continue
 
         # --- Upsampling support
         # If parameter resolutions will be upsampled during the optimization,

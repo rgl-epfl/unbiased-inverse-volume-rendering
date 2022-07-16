@@ -18,6 +18,9 @@ class SceneConfig():
 
     max_depth: int = 64
     ref_scene_vars: Dict = None
+    # Directory name where to find the reference images.
+    # Useful if multiple configurations share the same
+    # set of ref images.
     references: str = None
     ref_spp: int = 8192
     ref_integrator: str = 'volpathsimple'
@@ -63,9 +66,19 @@ class SceneConfig():
 
 
 _SCENE_CONFIGS = {}
+_SCENE_CONFIG_KWARGS = {}
 def add_scene_config(name, **kwargs):
     assert name not in _SCENE_CONFIGS, f'Duplicate scene config name: {name}'
     _SCENE_CONFIGS[name] = SceneConfig(name, **kwargs)
+    _SCENE_CONFIG_KWARGS[name] = deepcopy(kwargs)
+
+def add_scene_config_variant(name, base, **kwargs):
+    assert name not in _SCENE_CONFIGS, f'Duplicate scene config name: {name}'
+    all_kwargs = deepcopy(_SCENE_CONFIG_KWARGS[base])
+    all_kwargs.update(deepcopy(kwargs))
+    _SCENE_CONFIGS[name] = SceneConfig(name, **all_kwargs)
+    _SCENE_CONFIG_KWARGS[name] = all_kwargs
+
 
 def get_scene_config(name):
     if isinstance(name, SceneConfig):
@@ -97,5 +110,25 @@ add_scene_config(
         'medium1.sigma_t.data': 0.04 / 20,
         'medium1.albedo.data': 0.6,
         'medium1.emission.data': 0.1 / 20,
+    },
+
+
+add_scene_config_variant(
+    'janga-smoke-from-nerf',
+    base='janga-smoke',
+    references='janga-smoke',
+    normal_scene_vars={
+        'resx': 720,
+        'resy': 620,
+        'medium_filename': join(OUTPUT_DIR, 'janga-smoke-sn64', 'nerf', 'final-medium1_sigma_t.vol'),
+        'albedo_filename': join(OUTPUT_DIR, 'janga-smoke-sn64', 'nerf', 'final-medium1_albedo.vol'),
+        'emission_filename': join(OUTPUT_DIR, 'janga-smoke-sn64', 'nerf', 'final-medium1_emission.vol'),
+        'envmap_filename': 'textures/gamrig_2k.hdr',
+        'majorant_resolution_factor': 8,
+    },
+    start_from_value={
+        'medium1.sigma_t.data': None,
+        'medium1.albedo.data': 0.6,
+        'medium1.emission.data': None,
     },
 )
