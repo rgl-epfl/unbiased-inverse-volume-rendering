@@ -155,8 +155,10 @@ def render_batch_primal(integrator: mi.SamplingIntegrator,
 
         # Assume that rays were perfectly sampled.
         ray_weight = 1.0
-        pos = 0.5 + mi.Float(dr.arange(mi.UInt32, dr.width(rays)) // spp)
-
+        pos = mi.Point2f(
+            0.5 + mi.Float(dr.arange(mi.UInt32, dr.width(rays)) // spp),
+            0.5
+        )
         # Launch the Monte Carlo sampling process in primal mode
         L, valid, state = integrator.sample(
             mode=dr.ADMode.Primal,
@@ -244,7 +246,10 @@ def render_batch_backward(integrator: mi.SamplingIntegrator,
         # Assume that rays were perfectly sampled.
         ray_weight = 1.0
         det = 1.0
-        pos = 0.5 + mi.Float(dr.arange(mi.UInt32, dr.width(rays)) // spp)
+        pos = mi.Point2f(
+            0.5 + mi.Float(dr.arange(mi.UInt32, dr.width(rays)) // spp),
+            0.5
+        )
 
         # (1) Primal rendering (detached)
         L, valid, state_out = integrator.sample(
