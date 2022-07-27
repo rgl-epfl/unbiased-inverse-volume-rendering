@@ -61,7 +61,8 @@ class SceneConfig():
             self.references = join(OUTPUT_DIR, 'references', self.references)
 
         if not self.preview_sensors:
-            self.preview_sensors = [self.sensors[i] for i in range(min(5, len(self.sensors)))]
+            self.preview_sensors = self.sensors[0]
+            # self.preview_sensors = [self.sensors[i] for i in range(min(5, len(self.sensors)))]
 
         if not self.param_lr_factors:
             self.param_lr_factors = {}
