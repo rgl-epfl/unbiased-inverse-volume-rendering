@@ -182,7 +182,7 @@ For ease of implementation and increased performance, we have implemented simpli
 Implementation details
 ----------------------
 
-Our Differential Ratio Tracking algorithm, as well as the baseline free-flight sampling-based method are implemented in the [`VolpathSimpleIntegrator` class](blob/master/python/integrators/volpathsimple.py), which implements a Mitsuba 3 integrator plugin.
+Our Differential Ratio Tracking algorithm, as well as the baseline free-flight sampling-based method are implemented in the [`VolpathSimpleIntegrator` class](python/integrators/volpathsimple.py), which implements a Mitsuba 3 integrator plugin.
 
 As such, it can be loaded and used as any other Mitsuba integrator:
 
