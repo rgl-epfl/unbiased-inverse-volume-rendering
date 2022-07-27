@@ -41,7 +41,7 @@ def reproduce_optimization_experiments(configs, overwrite=False):
                 run_optimization(output_dir, opt_config, scene_config, int_config)
 
 
-def main():
+def main(opt_config_name=None, integrators=None):
     base_opt_config = {
         'n_iter': 6000,
         'preview_stride': 250,
@@ -251,10 +251,33 @@ def main():
         # },
     }
 
+    # Filter to the selected config and integrators, if specified
+    if opt_config_name is not None:
+        assert opt_config_name in configs, \
+               f'Configuration name "{opt_config_name}" not found. Available configs: {list(configs.keys())}.'
+        configs = { opt_config_name: configs[opt_config_name] }
+
+    if integrators is not None:
+        configs = deepcopy(configs)
+        found = False
+        for _, c in configs.items():
+            c['integrators'] = { k: i for k, i in c['integrators'].items()
+                                 if k in integrators }
+            found = found or (len(c) > 0)
+
+        assert found, f'No configuration using integrator name "{opt_config_name}" found.'
+
     reproduce_optimization_experiments(configs, overwrite=False)
 
 
-
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser('reproduce.py')
+    parser.add_argument('--config', type=str, dest='opt_config_name', default=None,
+                        help='Optimization configuration name to run. If not specified, all configurations will run.')
+    parser.add_argument('--integrator', type=str, action='append', dest='integrators', default=None,
+                        help='Subset of integrators (methods) to use. If not specified, all available methods will run.')
+    args = parser.parse_args()
+
     mi.set_variant('cuda_ad_rgb')
-    main()
+    main(**vars(args))

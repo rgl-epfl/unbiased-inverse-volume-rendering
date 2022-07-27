@@ -150,7 +150,7 @@ Alternatively, a specific combination of scene and method can be specified.
 In this case, the optimization parameters will be looked up from the `reproduce.py` file.
 
 ```bash
-python3 ./python/reproduce.py --scene rover-sn64 --integrator volpathsimple-drt
+python3 ./python/reproduce.py --config rover-sn64 --integrator volpathsimple-drt
 ```
 
 
