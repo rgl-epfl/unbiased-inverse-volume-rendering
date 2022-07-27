@@ -4,10 +4,8 @@
 
   <h1 align="center"><a href="https://rgl.epfl.ch/publications/NimierDavid2022Unbiased/">Unbiased Inverse Volume Rendering with Differential Trackers</a></h1>
 
-  <a href="https://rgl.epfl.ch/publications/NimierDavid2022Unbiased/">
-    <!-- TODO: dark mode version -->
-    <img src="https://rgl.s3.eu-central-1.amazonaws.com/media/images/papers/NimierDavid2022Unbiased_teaser.jpg" alt="Logo" width="100%">
-  </a>
+  <img src="https://github.com/rgl-epfl/unbiased-inverse-volume-rendering/raw/master/figures/teaser/teaser-light.png#gh-light-mode-only" alt="Unbiased Inverse Volume Rendering with Differential Trackers - teaser image"/>
+  <img src="https://github.com/rgl-epfl/unbiased-inverse-volume-rendering/raw/master/figures/teaser/teaser-dark.png#gh-dark-mode-only" alt="Unbiased Inverse Volume Rendering with Differential Trackers - teaser image"/>
 
   <p align="center">
     ACM Transactions on Graphics - 2022
