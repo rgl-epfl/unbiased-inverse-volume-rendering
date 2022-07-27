@@ -1,0 +1,21 @@
+title: Unbiased inverse volume rendering with differential trackers
+abstract: This repository contains the source code of the paper Unbiased inverse volume rendering with differential trackers by Merlin Nimier-David, Thomas Müller, Alexander Keller and Wenzel Jakob, from ACM Trans. Graph.
+doi: 10.1145/3528223.3530073
+repository-code: https://github.com/rgl-epfl/unbiased-inverse-volume-rendering
+version: 1.0.0
+date-released: 2022-07-21
+message: If you use this software in your work, please cite it using the following metadata.
+authors:
+  - given-names: Merlin
+    family-names: Nimier-David
+    affiliation: École Polytechnique Fédérale de Lausanne (EPFL), Switzerland
+  - given-names: Thomas
+    family-names: Müller
+    affiliation: NVIDIA, Switzerland
+  - given-names: Alexander
+    family-names: Keller
+    affiliation: NVIDIA, Germany
+  - given-names: Wenzel
+    family-names: Jakob
+    affiliation: École Polytechnique Fédérale de Lausanne (EPFL), Switzerland
+cff-version: 1.2.0
