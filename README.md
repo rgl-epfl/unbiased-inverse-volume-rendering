@@ -32,8 +32,22 @@
 </p>
 
 <br>
-<br>
 
+<!-- TABLE OF CONTENTS -->
+<details open="open" style='padding: 15px; border-radius:5px; border-style: solid; border-width: 1px;'>
+  <summary>Table of Contents</summary>
+  <ol>
+    <li><a href="#overview">Overview</a>
+    <li><a href="#citation">Citation</a>
+    <li><a href="#getting-started">Getting started</a>
+    <li><a href="#running-an-optimization">Running an optimization</a>
+    <li><a href="#limitations">Limitations</a>
+    <li><a href="#implementation-details">Implementation details</a>
+    <li><a href="#acknowledgements">Acknowledgements</a>
+  </ol>
+</details>
+
+<br>
 
 Overview
 --------
