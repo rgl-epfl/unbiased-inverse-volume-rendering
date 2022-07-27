@@ -13,7 +13,10 @@ from util import save_params, get_single_medium
 
 def load_scene(scene_config, reference=False, **kwargs):
     scene_vars = scene_config.ref_scene_vars if reference else scene_config.normal_scene_vars
-    scene = mi.load_file(scene_config.fname, **scene_vars, **kwargs)
+    if reference and scene_config.ref_fname:
+        scene = mi.load_file(scene_config.ref_fname, **scene_vars, **kwargs)
+    else:
+        scene = mi.load_file(scene_config.fname, **scene_vars, **kwargs)
 
     return scene
 
@@ -228,7 +231,7 @@ def create_checkpoint(output_dir, opt_config, scene_config, params, name_or_it):
         if not opt_config.checkpoint_final:
             return
     elif isinstance(name_or_it, int):
-        if (name_or_it == 0) or (name_or_it % opt_config.checkpoint_stride) != 0:
+        if (name_or_it == 0) or (not opt_config.checkpoint_stride) or (name_or_it % opt_config.checkpoint_stride) != 0:
             return
         prefix = f'{name_or_it:08d}'
     else:

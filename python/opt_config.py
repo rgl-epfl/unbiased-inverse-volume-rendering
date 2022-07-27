@@ -37,8 +37,8 @@ class OptimizationConfig():
     loss: Callable = losses.l1
 
     def __post_init__(self):
+        self.upsample_at = set()
         if self.upsample:
-            self.upsample_at = set()
             for t in self.upsample:
                 assert t >= 0 and t <= 1
                 self.upsample_at.add(int(t * self.n_iter))

@@ -17,13 +17,14 @@ class SceneConfig():
     start_from_value: Dict
 
     max_depth: int = 64
-    ref_scene_vars: Dict = None
     # Directory name where to find the reference images.
     # Useful if multiple configurations share the same
     # set of ref images.
     references: str = None
     ref_spp: int = 8192
     ref_integrator: str = 'volpathsimple'
+    ref_fname: str = None
+    ref_scene_vars: Dict = None
     preview_sensors: List[int] = None
 
     # Upper bound on the density, this prevents very large render times.
@@ -42,6 +43,10 @@ class SceneConfig():
         self.fname = realpath(join(SCENE_DIR, self.fname))
         if not os.path.isfile(self.fname):
             raise ValueError(f'Scene file not found: {self.fname}')
+        if self.ref_fname:
+            self.ref_fname = realpath(join(SCENE_DIR, self.ref_fname))
+            if not os.path.isfile(self.ref_fname):
+                raise ValueError(f'Reference scene file not found: {self.ref_fname}')
 
         if self.ref_scene_vars is None:
             self.ref_scene_vars = deepcopy(self.normal_scene_vars)
