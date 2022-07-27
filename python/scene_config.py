@@ -111,13 +111,14 @@ add_scene_config(
         'envmap_filename': 'textures/gamrig_2k.hdr',
         'majorant_resolution_factor': 8,
     },
-    sensors=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,54,55,56,57,58,59,60,61,62,63,],max_depth=64,
+    sensors=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,54,55,56,57,58,59,60,61,62,63,],
+    max_depth=64,
     start_from_value={
         'medium1.sigma_t.data': 0.04 / 20,
         'medium1.albedo.data': 0.6,
         'medium1.emission.data': 0.1 / 20,
     },
-
+)
 
 add_scene_config_variant(
     'janga-smoke-from-nerf',
@@ -126,9 +127,9 @@ add_scene_config_variant(
     normal_scene_vars={
         'resx': 720,
         'resy': 620,
-        'medium_filename': join(OUTPUT_DIR, 'janga-smoke-sn64', 'nerf', 'final-medium1_sigma_t.vol'),
-        'albedo_filename': join(OUTPUT_DIR, 'janga-smoke-sn64', 'nerf', 'final-medium1_albedo.vol'),
-        'emission_filename': join(OUTPUT_DIR, 'janga-smoke-sn64', 'nerf', 'final-medium1_emission.vol'),
+        'medium_filename': join(OUTPUT_DIR, 'janga-smoke-sn64', 'nerf', 'params', 'final-medium1_sigma_t.vol'),
+        'albedo_filename': join(OUTPUT_DIR, 'janga-smoke-sn64', 'nerf', 'params', 'final-medium1_albedo.vol'),
+        'emission_filename': join(OUTPUT_DIR, 'janga-smoke-sn64', 'nerf', 'params', 'final-medium1_emission.vol'),
         'envmap_filename': 'textures/gamrig_2k.hdr',
         'majorant_resolution_factor': 8,
     },
@@ -137,4 +138,219 @@ add_scene_config_variant(
         'medium1.albedo.data': 0.6,
         'medium1.emission.data': None,
     },
+    preview_sensors=[0,]
+)
+
+# ----------
+
+add_scene_config(
+    'dust-devil',
+    fname='dust-devil/dust-devil.xml',
+    param_keys=['medium1.sigma_t.data', 'medium1.albedo.data', 'medium1.emission.data'],
+    normal_scene_vars={
+        'resx': 620,
+        'resy': 720,
+        'envmap_filename': 'textures/kloofendal_38d_partly_cloudy_4k.exr',
+        'majorant_resolution_factor': 8,
+    },
+    ref_scene_vars={
+        'resx': 620,
+        'resy': 720,
+        'medium_filename': 'volumes/embergen_dust_devil_tornado_a_50-256-256-256.vol',
+        'albedo_filename': 'volumes/albedo-constant-sand-256-256-256.vol',
+        'emission_filename': 'volumes/albedo-constant-sand-256-256-256.vol',
+        'envmap_filename': 'textures/kloofendal_38d_partly_cloudy_4k.exr',
+        'majorant_resolution_factor': 8,
+    },
+    sensors=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,54,55,56,57,58,59,60,61,62,63,],
+    max_depth=64,
+    start_from_value={
+        'medium1.sigma_t.data': 0.04 / 100,
+        'medium1.albedo.data': 0.6,
+        'medium1.emission.data': 0.1 / 100,
+    },
+    preview_sensors=[0,]
+)
+
+add_scene_config_variant(
+    'dust-devil-from-nerf',
+    base='dust-devil',
+    references='dust-devil',
+    normal_scene_vars={
+        'resx': 620,
+        'resy': 720,
+        'medium_filename': join(OUTPUT_DIR, 'dust-devil-sn64', 'nerf', 'params', 'final-medium1_sigma_t.vol'),
+        'albedo_filename': join(OUTPUT_DIR, 'dust-devil-sn64', 'nerf', 'params', 'final-medium1_albedo.vol'),
+        'emission_filename': join(OUTPUT_DIR, 'dust-devil-sn64', 'nerf', 'params', 'final-medium1_emission.vol'),
+        'envmap_filename': 'textures/kloofendal_38d_partly_cloudy_4k.exr',
+        'majorant_resolution_factor': 8,
+    },
+    start_from_value={
+        'medium1.sigma_t.data': None,
+        'medium1.albedo.data': 0.6,
+        'medium1.emission.data': None,
+    },
+    param_lr_factors={
+        'medium1.albedo.data': 100,
+    },
+    preview_sensors=[0,]
+)
+
+# ----------
+
+add_scene_config(
+    'astronaut-rotated',
+    fname='astronaut-rotated/astronaut-rotated.xml',
+    ref_fname='astronaut-rotated/astronaut-rotated-ref.xml',
+    ref_integrator='path',
+    param_keys=['medium1.sigma_t.data', 'medium1.albedo.data', 'medium1.emission.data'],
+    normal_scene_vars={
+        'resx': 720,
+        'resy': 1080,
+        'medium_filename': 'volumes/sigma_t-constant-sand-256-256-256.vol',
+        'albedo_filename': 'volumes/albedo-constant-sand-256-256-256.vol',
+        'emission_filename': 'volumes/albedo-constant-sand-256-256-256.vol',
+        'envmap_filename': 'textures/skylit_garage_4k.exr',
+        'majorant_resolution_factor': 8,
+    },
+    ref_scene_vars={
+        'resx': 720,
+        'resy': 1080,
+        'envmap_filename': 'textures/skylit_garage_4k.exr',
+    },
+    sensors=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,],
+    max_depth=64,
+    start_from_value={
+        'medium1.sigma_t.data': 0.04,
+        'medium1.albedo.data': 0.6,
+        'medium1.emission.data': 0.1,
+    },
+    preview_sensors=[0,]
+)
+
+add_scene_config_variant(
+    'astronaut-rotated-from-nerf',
+    base='astronaut-rotated',
+    references='astronaut-rotated',
+    normal_scene_vars={
+        'resx': 720,
+        'resy': 1080,
+        'medium_filename': join(OUTPUT_DIR, 'astronaut-rotated-sn64', 'nerf', 'params', 'final-medium1_sigma_t.vol'),
+        'albedo_filename': join(OUTPUT_DIR, 'astronaut-rotated-sn64', 'nerf', 'params', 'final-medium1_albedo.vol'),
+        'emission_filename': join(OUTPUT_DIR, 'astronaut-rotated-sn64', 'nerf', 'params', 'final-medium1_emission.vol'),
+        'envmap_filename': 'textures/skylit_garage_4k.exr',
+        'majorant_resolution_factor': 8,
+    },
+    start_from_value={
+        'medium1.sigma_t.data': None,
+        'medium1.albedo.data': 0.6,
+        'medium1.emission.data': None,
+    },
+    preview_sensors=[0,]
+)
+
+# ----------
+
+add_scene_config(
+    'rover',
+    fname='rover/rover.xml',
+    ref_fname='rover/rover-ref.xml',
+    ref_integrator='path',
+    param_keys=['medium1.sigma_t.data', 'medium1.albedo.data', 'medium1.emission.data'],
+    normal_scene_vars={
+        'resx': 860,
+        'resy': 720,
+        'medium_filename': 'volumes/sigma_t-constant-sand-256-256-256.vol',
+        'albedo_filename': 'volumes/albedo-constant-sand-256-256-256.vol',
+        'emission_filename': 'volumes/albedo-constant-sand-256-256-256.vol',
+        'envmap_filename': 'textures/gamrig_2k.hdr',
+        'majorant_resolution_factor': 8,
+    },
+    ref_scene_vars={
+        'resx': 860,
+        'resy': 720,
+        'envmap_filename': 'textures/gamrig_2k.hdr',
+    },
+    sensors=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,54,55,56,57,58,59,60,61,62,63,],
+    max_depth=64,
+    start_from_value={
+        'medium1.sigma_t.data': 0.04,
+        'medium1.albedo.data': 0.6,
+        'medium1.emission.data': 0.1,
+    },
+    preview_sensors=[0,]
+)
+
+add_scene_config_variant(
+    'rover-from-nerf',
+    base='rover',
+    references='rover',
+    normal_scene_vars={
+        'resx': 860,
+        'resy': 720,
+        'medium_filename': join(OUTPUT_DIR, 'rover-sn64', 'nerf', 'params', 'final-medium1_sigma_t.vol'),
+        'albedo_filename': join(OUTPUT_DIR, 'rover-sn64', 'nerf', 'params', 'final-medium1_albedo.vol'),
+        'emission_filename': join(OUTPUT_DIR, 'rover-sn64', 'nerf', 'params', 'final-medium1_emission.vol'),
+        'envmap_filename': 'textures/gamrig_2k.hdr',
+        'majorant_resolution_factor': 8,
+    },
+    start_from_value={
+        'medium1.sigma_t.data': None,
+        'medium1.albedo.data': 0.6,
+        'medium1.emission.data': None,
+    },
+    preview_sensors=[0,]
+)
+
+# ----------
+
+add_scene_config(
+    'tree-2',
+    fname='tree-2/tree-2.xml',
+    ref_fname='tree-2/tree-2-ref.xml',
+    ref_integrator='path',
+    param_keys=['medium1.sigma_t.data', 'medium1.albedo.data', 'medium1.emission.data'],
+    normal_scene_vars={
+        'resx': 720,
+        'resy': 900,
+        'medium_filename': 'volumes/sigma_t-constant-sand-256-256-256.vol',
+        'albedo_filename': 'volumes/albedo-constant-sand-256-256-256.vol',
+        'emission_filename': 'volumes/albedo-constant-sand-256-256-256.vol',
+        'envmap_filename': 'textures/round_platform_2k.hdr',
+        'majorant_resolution_factor': 8,
+    },
+    ref_scene_vars={
+        'resx': 720,
+        'resy': 900,
+        'envmap_filename': 'textures/round_platform_2k.hdr',
+    },
+    sensors=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,],
+    max_depth=64,
+    start_from_value={
+        'medium1.sigma_t.data': 0.04 / 2,
+        'medium1.albedo.data': 0.6,
+        'medium1.emission.data': 0.1 / 2,
+    },
+    preview_sensors=[0,]
+)
+
+add_scene_config_variant(
+    'tree-2-from-nerf',
+    base='tree-2',
+    references='tree-2',
+    normal_scene_vars={
+        'resx': 720,
+        'resy': 900,
+        'medium_filename': join(OUTPUT_DIR, 'tree-2-sn64', 'nerf', 'params', 'final-medium1_sigma_t.vol'),
+        'albedo_filename': join(OUTPUT_DIR, 'tree-2-sn64', 'nerf', 'params', 'final-medium1_albedo.vol'),
+        'emission_filename': join(OUTPUT_DIR, 'tree-2-sn64', 'nerf', 'params', 'final-medium1_emission.vol'),
+        'envmap_filename': 'textures/round_platform_2k.hdr',
+        'majorant_resolution_factor': 8,
+    },
+    start_from_value={
+        'medium1.sigma_t.data': None,
+        'medium1.albedo.data': 0.6,
+        'medium1.emission.data': None,
+    },
+    preview_sensors=[0,]
 )
