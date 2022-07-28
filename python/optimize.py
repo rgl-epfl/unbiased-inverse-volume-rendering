@@ -116,8 +116,11 @@ def render_previews(output_dir, opt_config, scene_config, scene, integrator, it_
         if not opt_config.render_final:
             return
         suffix = '_final'
-    else:
+    elif isinstance(it_i, int):
         suffix = f'_{it_i:08d}'
+    else:
+        assert isinstance(it_i, str)
+        suffix = it_i
 
     preview_spp = opt_config.preview_spp or opt_config.spp
 
@@ -178,14 +181,13 @@ def enforce_valid_params(scene_config, opt):
 
 def adjust_majorant_res_factor(scene_config, scene, density_res):
     res_factor = scene_config.majorant_resolution_factor
-    if res_factor <= 1:
-        return
 
-    min_side = dr.min(density_res[:3])
-    # For the current density res, find the largest factor that
-    # results in a meaningful supergrid resolution.
-    while (res_factor > 1) and (min_side // res_factor) < 4:
-        res_factor -= 1
+    if res_factor > 1:
+        min_side = dr.min(density_res[:3])
+        # For the current density res, find the largest factor that
+        # results in a meaningful supergrid resolution.
+        while (res_factor > 1) and (min_side // res_factor) < 4:
+            res_factor -= 1
     # Otherwise, just disable the supergrid.
     if res_factor <= 1:
         res_factor = 0

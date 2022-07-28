@@ -102,7 +102,8 @@ class IntegratorConfig:
         assert d['max_depth'] >= 0
         # TODO: add support for Russian Roulette
         assert 'rr_depth' not in kwargs
-        d['rr_depth'] = d['max_depth'] + 1000
+        if 'rr_depth' not in self.params:
+            d['rr_depth'] = d['max_depth'] + 1000
 
         return mi.load_dict(d)
 
