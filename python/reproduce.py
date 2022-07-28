@@ -51,7 +51,8 @@ def main(opt_config_name=None, integrators=None):
         'lr_schedule': Schedule.Last25,
         'batch_size': 32768,
         'render_initial': False,
-        'render_final': False,
+        'render_final': True,
+        'preview_spp': 1024,
         'checkpoint_stride': None,
 
         'upsample': [0.04, 0.16, 0.36, 0.64],
@@ -70,7 +71,6 @@ def main(opt_config_name=None, integrators=None):
         'janga-smoke-sn64': {
             'scene': 'janga-smoke',
             'opt': deepcopy(base_opt_config),
-            # Integrator name => optimization config overrides
             'integrators': {
                 'nerf': {
                     'lr': 1e-2,
@@ -133,7 +133,6 @@ def main(opt_config_name=None, integrators=None):
         'astronaut-rotated-sn64': {
             'scene': 'astronaut-rotated',
             'opt': deepcopy(base_opt_config),
-            # Integrator name => optimization config overrides
             'integrators': {
                 'nerf': {
                     'spp': 4,
@@ -144,9 +143,8 @@ def main(opt_config_name=None, integrators=None):
             },
         },
         'astronaut-rotated-from-nerf-sn64': {
-            'scene': 'astronaut-rotated',
+            'scene': 'astronaut-rotated-from-nerf',
             'opt': deepcopy(base_opt_config),
-            # Integrator name => optimization config overrides
             'integrators': {
                 'volpathsimple-drt': {
                     'upsample': None,
@@ -162,7 +160,6 @@ def main(opt_config_name=None, integrators=None):
         'rover-sn64': {
             'scene': 'rover',
             'opt': deepcopy(base_opt_config),
-            # Integrator name => optimization config overrides
             'integrators': {
                 'nerf': {
                     'lr': 1e-2,
@@ -178,9 +175,8 @@ def main(opt_config_name=None, integrators=None):
             },
         },
         'rover-from-nerf-sn64': {
-            'scene': 'rover',
+            'scene': 'rover-from-nerf',
             'opt': deepcopy(base_opt_config),
-            # Integrator name => optimization config overrides
             'integrators': {
                 'volpathsimple-drt': {
                     'lr': 1e-2,
@@ -214,9 +210,8 @@ def main(opt_config_name=None, integrators=None):
             },
         },
         'tree-2-from-nerf-sn64': {
-            'scene': 'tree-2',
+            'scene': 'tree-2-from-nerf',
             'opt': deepcopy(base_opt_config),
-            # Integrator name => optimization config overrides
             'integrators': {
                 'volpathsimple-drt': {
                     'lr': 1e-2,
