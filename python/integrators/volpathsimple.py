@@ -151,7 +151,7 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
 
                 if (not self.use_drt) or self.use_drt_mis:
                     drt_mis_weight = 1.0
-                    if self.use_drt_mis:
+                    if self.use_drt and self.use_drt_mis:
                         # Note: MIS weight hardcoded for the power heuristic
                         s2 = dr.sqr(mei.sigma_t)
                         drt_mis_weight = s2 / (1 + s2)
@@ -510,6 +510,7 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
         """
         Estimate in-scattering gradients with Differential Delta Tracking.
         """
+        assert self.use_drt
 
         # --- DRT subsampling: at each bounce, instead of applying
         # differential ratio tracking, simply update a reservoir to
@@ -518,7 +519,7 @@ class VolpathSimpleIntegrator(mi.ad.integrators.common.RBIntegrator):
         # once all bounces have been simulated, # this time with
         # arguments taken from the DRT reservoir.
         if drt_reservoir is not None:
-            assert self.use_drt_subsampling
+            assert self.use_drt and self.use_drt_subsampling
             state_for_delayed = {
                 'depth': depth,
                 'si': si,
