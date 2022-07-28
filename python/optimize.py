@@ -200,7 +200,7 @@ def adjust_majorant_res_factor(scene_config, scene, density_res):
 
 
 
-def upsample_grid(current_values, old_res, new_res, n_channels):
+def upsample_grid(current_values, old_res, new_res):
     """Upsample values of a 3D grid using first order interpolation."""
     from scipy.ndimage import zoom
     assert isinstance(current_values, (mi.TensorXf, dr.detached_t(mi.TensorXf))), \
@@ -213,7 +213,7 @@ def upsample_grid(current_values, old_res, new_res, n_channels):
     assert new_res[-1] == n_channels
 
     # TODO: replace with a pure DrJit-based solution
-    factors = [r / old_res for r in new_res]
+    factors = [r1 / r2 for r1, r2 in zip(new_res, old_res)]
     current_values = current_values.numpy()
     if current_values.ndim == 3:
         current_values = current_values[..., None]
@@ -221,7 +221,7 @@ def upsample_grid(current_values, old_res, new_res, n_channels):
     new_values = zoom(current_values, factors, order=1,
                       mode='nearest', prefilter=False, grid_mode=True)
     new_values = mi.TensorXf(new_values)
-    assert new_values.shape == new_res
+    assert new_values.shape == new_res, (str(new_values.shape), str(new_res))
     return new_values
 
 
