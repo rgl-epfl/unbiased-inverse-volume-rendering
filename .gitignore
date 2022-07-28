@@ -149,3 +149,8 @@ hists/*
 *.bak/*
 
 scenes/*
+scenes.zip
+
+figures/teaser/*.jpg
+figures/teaser/*.pdf
+figures/teaser/teaser.ai
