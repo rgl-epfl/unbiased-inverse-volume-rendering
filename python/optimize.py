@@ -199,6 +199,32 @@ def adjust_majorant_res_factor(scene_config, scene, density_res):
         print(f'[i] Updated majorant supergrid resolution factor: {current} → {res_factor}')
 
 
+
+def upsample_grid(current_values, old_res, new_res, n_channels):
+    """Upsample values of a 3D grid using first order interpolation."""
+    from scipy.ndimage import zoom
+    assert isinstance(current_values, (mi.TensorXf, dr.detached_t(mi.TensorXf))), \
+            'Unsupported type for upsampling: {}'.format(type(current_values))
+    if tuple(old_res) == tuple(new_res):
+        return mi.TensorXf(dr.detach(current_values))
+
+    n_channels = old_res[-1]
+    assert len(old_res) == 4 and len(new_res) == 4
+    assert new_res[-1] == n_channels
+
+    # TODO: replace with a pure DrJit-based solution
+    factors = [r / old_res for r in new_res]
+    current_values = current_values.numpy()
+    if current_values.ndim == 3:
+        current_values = current_values[..., None]
+
+    new_values = zoom(current_values, factors, order=1,
+                      mode='nearest', prefilter=False, grid_mode=True)
+    new_values = mi.TensorXf(new_values)
+    assert new_values.shape == new_res
+    return new_values
+
+
 def upsample_params_if_needed(opt_config, scene_config, scene, params, opt, it_i):
     if not opt_config.should_upsample(it_i):
         return False
@@ -206,12 +232,14 @@ def upsample_params_if_needed(opt_config, scene_config, scene, params, opt, it_i
     majorant_res_factor = scene_config.majorant_resolution_factor
 
     for k in scene_config.param_keys:
-        # TODO: double-check this is all working correctly
         v = opt[k]
         old_res = dr.shape(v)
         assert len(old_res) == 4
         new_res = (*[2 * r for r in old_res[:3]], old_res[-1])
-        opt[k] = dr.upsample(v, shape=new_res)
+
+        # opt[k] = dr.upsample(v, shape=new_res)
+        opt[k] = upsample_grid(v, old_res, new_res)
+
         assert dr.shape(opt[k]) == new_res
         print(f'[i] Upsampled parameter "{k}" at iteration {it_i}: {old_res} → {new_res}')
 

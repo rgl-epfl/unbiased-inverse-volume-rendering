@@ -61,7 +61,7 @@ class SceneConfig():
             self.references = join(OUTPUT_DIR, 'references', self.references)
 
         if not self.preview_sensors:
-            self.preview_sensors = self.sensors[0]
+            self.preview_sensors = [self.sensors[0]]
             # self.preview_sensors = [self.sensors[i] for i in range(min(5, len(self.sensors)))]
 
         if not self.param_lr_factors:
@@ -138,7 +138,6 @@ add_scene_config_variant(
         'medium1.albedo.data': 0.6,
         'medium1.emission.data': None,
     },
-    preview_sensors=[0,]
 )
 
 # ----------
@@ -169,7 +168,6 @@ add_scene_config(
         'medium1.albedo.data': 0.6,
         'medium1.emission.data': 0.1 / 100,
     },
-    preview_sensors=[0,]
 )
 
 add_scene_config_variant(
@@ -193,7 +191,6 @@ add_scene_config_variant(
     param_lr_factors={
         'medium1.albedo.data': 100,
     },
-    preview_sensors=[0,]
 )
 
 # ----------
@@ -246,7 +243,6 @@ add_scene_config_variant(
         'medium1.albedo.data': 0.6,
         'medium1.emission.data': None,
     },
-    preview_sensors=[0,]
 )
 
 # ----------
@@ -278,7 +274,6 @@ add_scene_config(
         'medium1.albedo.data': 0.6,
         'medium1.emission.data': 0.1,
     },
-    preview_sensors=[0,]
 )
 
 add_scene_config_variant(
@@ -299,7 +294,6 @@ add_scene_config_variant(
         'medium1.albedo.data': 0.6,
         'medium1.emission.data': None,
     },
-    preview_sensors=[0,]
 )
 
 # ----------
@@ -331,7 +325,6 @@ add_scene_config(
         'medium1.albedo.data': 0.6,
         'medium1.emission.data': 0.1 / 2,
     },
-    preview_sensors=[0,]
 )
 
 add_scene_config_variant(
@@ -352,5 +345,4 @@ add_scene_config_variant(
         'medium1.albedo.data': 0.6,
         'medium1.emission.data': None,
     },
-    preview_sensors=[0,]
 )
